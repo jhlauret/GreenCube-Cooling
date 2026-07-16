@@ -27,7 +27,7 @@
                 <sheet>
                     <widget name="web_ribbon" title="Verrouillé" bg_color="text-bg-warning" invisible="not is_locked"/>
                     <div class="oe_button_box" name="button_box">
-                        <button name="study_count" type="object" class="oe_stat_button" icon="fa-list">
+                        <button name="action_view_studies" type="object" class="oe_stat_button" icon="fa-list">
                             <field name="study_count" widget="statinfo" string="Études"/>
                         </button>
                     </div>

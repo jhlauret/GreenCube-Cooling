@@ -20,8 +20,17 @@ else:
     from ..services.mercure.engine import MercureError, run_mercure
     from ..services.mercure.fixtures import studio_standard_input, west_glazed_office_input
 
+try:
+    # Under Odoo's own test runner, deriving from BaseCase (instead of plain
+    # unittest.TestCase) lets odoo.tests.common.MetaCase assign the
+    # 'test_tags'/'test_module' attributes these tests need to be picked up
+    # by --test-tags, while still running with no DB/registry dependency.
+    from odoo.tests.common import BaseCase as _TestCase
+except ImportError:
+    _TestCase = unittest.TestCase
 
-class ConversionsTestCase(unittest.TestCase):
+
+class ConversionsTestCase(_TestCase):
     def test_watts_to_kw(self):
         self.assertAlmostEqual(watts_to_kw(1500), 1.5)
 
@@ -43,7 +52,7 @@ def _breakdown_value(scenario_result, code, field="total_w"):
     raise KeyError(code)
 
 
-class ReferenceCasesTestCase(unittest.TestCase):
+class ReferenceCasesTestCase(_TestCase):
     def test_standard_studio_produces_complete_result(self):
         result = run_mercure(studio_standard_input())
         self.assertEqual(len(result.scenario_results), 3)
@@ -61,7 +70,7 @@ class ReferenceCasesTestCase(unittest.TestCase):
             self.assertGreaterEqual(scenario.total_load_w, scenario.sensible_load_w)
 
 
-class MonotonicPropertiesTestCase(unittest.TestCase):
+class MonotonicPropertiesTestCase(_TestCase):
     def test_more_glazing_area_does_not_reduce_solar_gain(self):
         base = studio_standard_input()
         more = dataclasses.replace(
@@ -119,7 +128,7 @@ class MonotonicPropertiesTestCase(unittest.TestCase):
         )
 
 
-class ErrorsTestCase(unittest.TestCase):
+class ErrorsTestCase(_TestCase):
     def test_rejects_snapshot_without_climate_scenarios(self):
         base = studio_standard_input()
         invalid = dataclasses.replace(base, climate_scenarios=[])

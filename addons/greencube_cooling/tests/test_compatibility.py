@@ -9,8 +9,13 @@ if __package__ in (None, ""):
 else:
     from ..services.compatibility import ProductTechnicalData, assess_compatibility
 
+try:
+    from odoo.tests.common import BaseCase as _TestCase
+except ImportError:
+    _TestCase = unittest.TestCase
 
-class CompatibilityTestCase(unittest.TestCase):
+
+class CompatibilityTestCase(_TestCase):
     def test_insufficient_capacity_is_incompatible(self):
         product = ProductTechnicalData(capacity_at_45c_w=1000, max_outdoor_temperature_c=46, shr=0.75)
         result = assess_compatibility(product, recommended_load_w=2000, governing_shr=0.8)

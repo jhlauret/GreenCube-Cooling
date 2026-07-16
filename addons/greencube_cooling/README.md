@@ -20,37 +20,86 @@
 
 ## Ce qui a été réellement vérifié
 
-- `python3 -c "ast.parse(...)"` sur tous les fichiers `.py` du module : **aucune erreur de syntaxe**.
-- `python3 -c "xml.etree.ElementTree.parse(...)"` sur tous les fichiers `.xml` : **tous bien formés**.
-- `python3 tests/test_mercure_engine.py` — **13 tests unittest passent**, y compris les propriétés
-  monotones exigées par le prompt MERCURE (plus de vitrage n'abaisse jamais le solaire, plus d'occupants
-  n'abaisse jamais les gains, une meilleure récupération n'augmente jamais la charge de ventilation, etc.).
-  Ce module ne dépend pas d'Odoo — il tourne avec le seul interpréteur Python standard.
-- `python3 tests/test_compatibility.py` — **5 tests unittest passent** sur le moteur de compatibilité produit.
+Ce lot a été vérifié sur une vraie instance Odoo 18 Community (`/opt/odoo/odoo18`, Python 3.13,
+PostgreSQL 17), en plus des vérifications syntaxiques précédentes. Toutes les commandes ci-dessous ont
+été exécutées réellement (pas de simulation) sur une base de test dédiée (`greencube_test`) :
 
-## Ce qui n'a PAS pu être vérifié dans cet environnement
+- **Syntaxe** : `ast.parse(...)` sur tous les `.py` et `xml.etree.ElementTree.parse(...)` sur tous les
+  `.xml` du module — aucune erreur.
+- **Installation sur base vierge** :
+  `odoo-bin -d greencube_test -i greencube_cooling --stop-after-init` → **code retour 0**, "28 modules
+  loaded" incluant `greencube_cooling`. Deux bugs réels ont été trouvés et corrigés à cette étape (pas
+  contournés) : les boutons statistiques (`oe_stat_button`) des vues `cooling_study_views.xml` et
+  `thermal_specification_views.xml` référençaient un champ (`result_count`, `study_count`) au lieu d'une
+  action `type="object"` — Odoo refusait de charger la vue ("`result_count` is not a valid action"). Ajout
+  des méthodes `action_view_results()` et `action_view_studies()` sur les modèles correspondants.
+- **Tests sous le vrai test runner Odoo** :
+  `odoo-bin -d greencube_test -i greencube_cooling --test-enable --test-tags greencube_cooling --stop-after-init`
+  → **30 tests, 0 échec, 0 erreur** (code retour 0). Ceci inclut :
+  - les 18 tests purs Python déjà existants (`test_mercure_engine.py`, `test_compatibility.py`), qui ne
+    sont montés en `odoo.tests.common.BaseCase` que lorsque le module `odoo` est réellement importable
+    (fallback vers `unittest.TestCase` sinon) — nécessaire car sous le vrai test runner, les tests sans
+    attribut `test_tags` sont silencieusement ignorés par le filtre `--test-tags` (bug de découverte
+    diagnostiqué et corrigé : les classes héritaient de `unittest.TestCase` nu, jamais reconnu par
+    `TagsSelector.check()`). Revérifié en standalone (`python3 tests/test_mercure_engine.py` /
+    `test_compatibility.py`) : toujours 13 + 5 tests OK, donc le double mode est préservé.
+  - **12 nouveaux tests `TransactionCase`** (`tests/test_cooling_study.py`), couvrant le §27 du prompt
+    GC-COOLING-01 : cycle de statuts draft→incomplete→ready→calculated→validated, `action_validate()`
+    refusé hors état `calculated`, verrouillage `write()` d'une étude validée (`UserError`) sauf champs
+    autorisés, `action_create_revision()` (copie des sous-lignes, non-copie du résultat actif,
+    `root_study_id` préservé), immutabilité de `greencube.cooling.result` et
+    `greencube.cooling.result.component` (write/unlink → `UserError`), verrouillage d'une
+    `thermal.specification` utilisée par une étude validée, et sécurité multi-société/ACL (un `user` ne
+    voit que ses propres études, un `technician` voit toutes les études de sa société, un `user` d'une
+    société A ne peut pas lire une étude de la société B — `AccessError`).
+  - **Un vrai bug de sécurité a été trouvé et corrigé par ces tests**, pas seulement documenté : la règle
+    `ir.rule` multi-société (`rule_cooling_study_company`) était scopée au groupe `group_greencube_cooling_user`,
+    donc combinée en **OR** (et non en AND) avec la règle "l'utilisateur ne voit que ses propres études"
+    (`rule_cooling_study_own_records_user`), puisque les deux règles s'appliquaient au même groupe. Un
+    simple `user` voyait donc **toutes les études de sa société**, pas seulement les siennes — l'inverse de
+    ce qu'exige le master prompt. Corrigé en rendant `rule_cooling_study_company` **globale** (`groups="[]"`,
+    donc ANDée avec toute règle de groupe), et en donnant à la règle du technicien un domaine `[(1,'=',1)]`
+    scopé à son seul groupe (pour qu'il OR-écrase la restriction "own records" qu'il hérite aussi via
+    `group_user`). Revérifié : `test_user_sees_only_own_studies` et
+    `test_user_of_company_a_cannot_read_company_b_study` passent désormais.
+- **Mise à jour d'une base existante** : des données réelles (persistées, pas dans une transaction de
+  test) ont été créées via `odoo-bin shell` — une spécification thermique, une étude complète avec
+  occupation, un calcul MERCURE exécuté et son résultat — puis
+  `odoo-bin -d greencube_test -u greencube_cooling --stop-after-init` a été lancé → **code retour 0**,
+  aucune erreur de migration. Revérifié après coup via `odoo-bin shell` : l'étude, le résultat (avec ses
+  17 composantes) et la spécification thermique sont toujours présents et inchangés, et la contrainte
+  d'immutabilité du résultat (`write()` → `UserError`) fonctionne toujours après la mise à jour.
+- **Routes API réelles avec client HTTP authentifié** : serveur Odoo lancé en HTTP (port dédié 8169,
+  isolé du service de production sur 8069), authentification via `/web/session/authenticate` (login/mot
+  de passe réels), puis appels HTTP réels (module `requests`) sur l'intégralité des routes du contrôleur :
+  - `POST /studies` (201), `PATCH /studies/<id>` (200), `POST /studies/<id>/snapshots` (201),
+    `POST /studies/<id>/calculations` (201, calcul MERCURE réellement exécuté, charge recommandée
+    2550 W cohérente), `GET /results/<id>` (200, breakdown complet), `GET /equipment-catalog` (200).
+  - `GET /studies` (200, liste, étude créée bien présente), `GET /calculations/<job_id>` (200),
+    `GET /studies/<id>/results` (200), `POST /studies/<id>/equipment-recommendations` (200, calcul de
+    compatibilité réel : statut `compatible` avec ratio de sur-dimensionnement 0.98 pour un split
+    2.7 kW face à une charge recommandée de 2.55 kW), `GET`/`POST /studies/<id>/equipment-selections`
+    (200/201, sélection créée puis relue), `POST /studies/<id>/validate` (200, état passé à `validated`),
+    `POST /studies/<id>/revisions` (201, révision créée avec `parent_study_id`/`root_study_id`/
+    `revision_number` corrects).
+  - Chemins d'erreur : `GET /studies/999999` et `POST /studies/999999/revisions` (404,
+    `COOLING_STUDY_NOT_FOUND`), `POST /studies/<draft_id>/validate` sur une étude encore en brouillon
+    (403, `COOLING_VALIDATION_FORBIDDEN`), accès non authentifié sur `GET /studies` (303 redirection
+    vers `/web/login`, confirmant `auth="user"`).
+  Toutes les routes du contrôleur `controllers/api.py` sont donc désormais exercées en HTTP réel, pas
+  seulement leur logique ORM sous-jacente.
 
-Aucun runtime Odoo (ni `odoo-bin`, ni PostgreSQL, ni `pip`) n'est disponible dans cet environnement
-d'exécution. En conséquence, **je n'ai pas pu prouver** :
+## Ce qui reste en suspens
 
-- que le module s'installe sur une base Odoo 18 vierge ;
-- que les vues s'ouvrent sans erreur de rendu ;
-- que les contraintes SQL/Python s'exécutent correctement via l'ORM réel ;
-- que les `ir.model.access.csv` / record rules produisent les permissions attendues ;
-- que les routes JSON répondent correctement à de vraies requêtes HTTP authentifiées ;
-- que les migrations et la mise à jour d'une base existante fonctionnent.
+Le runtime Odoo est maintenant disponible et a été utilisé pour toutes les vérifications ci-dessus.
+Ce qui reste néanmoins non couvert par ce lot :
 
-Le code a été écrit en suivant strictement les conventions Odoo 18 (nouvelle syntaxe `invisible="..."` dans
-les vues, `@api.model_create_multi`, etc.), mais **ceci reste non exécuté** tant qu'une vraie instance Odoo
-n'est pas disponible. Avant toute mise en production, il faut :
-
-1. installer le module sur une base vierge (`odoo-bin -i greencube_cooling`) et vérifier le code retour ;
-2. lancer `odoo-bin -i greencube_cooling --test-enable --stop-after-init` pour exécuter `tests/` sous le
-   TransactionCase d'Odoo (le contenu actuel n'a que des tests purs Python ; il faudra ajouter des
-   `TransactionCase` couvrant la création d'étude, les révisions, le verrouillage post-validation, et le
-   multi-société, comme l'exige `README_GC-COOLING-01_MODULE_ODOO.md` §27) ;
-3. tester une mise à jour (`-u greencube_cooling`) sur une base contenant déjà des données ;
-4. tester les routes API avec un vrai client HTTP authentifié.
+- **Rendu visuel des vues** : les vues se chargent sans erreur XML/action (vérifié), mais leur rendu dans
+  le navigateur (ergonomie, disposition) n'a pas été inspecté visuellement.
+- **Tests de charge / performance** : aucun test de volumétrie ou de temps de réponse sous charge.
+- **Frontend non branché sur cette API** : toujours un store Zustand mocké, cf. limitations ci-dessous.
+- Tout ce qui est listé dans "Limitations connues de ce lot" ci-dessous (climat, snapshot dédié,
+  Honeybee/EnergyPlus, matériaux détaillés, démo).
 
 ## Limitations connues de ce lot
 
@@ -75,7 +124,12 @@ n'est pas disponible. Avant toute mise en production, il faut :
 
 ## Prochaines étapes suggérées
 
-1. Faire tourner ce module sur une vraie instance Odoo 18 pour lever les limitations ci-dessus.
-2. Écrire les tests Odoo `TransactionCase` (§27 du prompt GC-COOLING-01).
-3. Brancher le frontend React sur cette API (remplacer `store/studyStore.ts` mock par TanStack Query + fetch).
-4. Traiter GC-COOLING-03/04 (géolocalisation, climat) pour remplacer l'heuristique de scénarios climatiques.
+1. ~~Faire tourner ce module sur une vraie instance Odoo 18~~ — fait (voir "Ce qui a été réellement
+   vérifié").
+2. ~~Écrire les tests Odoo `TransactionCase` (§27 du prompt GC-COOLING-01)~~ — fait
+   (`tests/test_cooling_study.py`, 12 tests).
+3. ~~Exercer en HTTP réel toutes les routes API~~ — fait : les 13 routes du contrôleur sont désormais
+   toutes vérifiées avec un client HTTP authentifié réel (voir "Ce qui a été réellement vérifié").
+4. Brancher le frontend React sur cette API (remplacer `store/studyStore.ts` mock par TanStack Query + fetch).
+5. Traiter GC-COOLING-03/04 (géolocalisation, climat) pour remplacer l'heuristique de scénarios climatiques.
+6. Ajouter des données de démonstration (`demo/greencube_cooling_demo.xml`) avant une recette utilisateur.

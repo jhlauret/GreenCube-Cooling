@@ -127,6 +127,17 @@ class GreencubeCoolingStudy(models.Model):
         for study in self:
             study.result_count = len(study.result_ids)
 
+    def action_view_results(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Résultats",
+            "res_model": "greencube.cooling.result",
+            "view_mode": "list,form",
+            "domain": [("study_id", "=", self.id)],
+            "context": {"default_study_id": self.id},
+        }
+
     @api.depends("result_ids", "result_ids.state")
     def _compute_active_result(self):
         for study in self:

@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Global (group-less) rule: ANDed with every other rule below, so no
+         user of any GreenCube group can ever see another company's studies,
+         regardless of which group-scoped (OR'd) domain also matches. -->
     <record id="rule_cooling_study_company" model="ir.rule">
         <field name="name">GreenCube Cooling Study: multi-company</field>
         <field name="model_id" ref="model_greencube_cooling_study"/>
         <field name="domain_force">[('company_id', 'in', company_ids)]</field>
-        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+        <field name="groups" eval="[]"/>
     </record>
 
     <record id="rule_cooling_study_own_records_user" model="ir.rule">
@@ -14,10 +17,14 @@
         <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
     </record>
 
+    <!-- Technicians (and managers/admins, who imply this group) are also
+         members of group_greencube_cooling_user, so this rule ORs with the
+         "own studies only" rule above and widens their visibility to every
+         study of their own company. -->
     <record id="rule_cooling_study_technician_company" model="ir.rule">
         <field name="name">GreenCube Cooling Study: technician sees all company studies</field>
         <field name="model_id" ref="model_greencube_cooling_study"/>
-        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="domain_force">[(1, '=', 1)]</field>
         <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
     </record>
 

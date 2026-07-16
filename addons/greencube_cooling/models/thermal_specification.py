@@ -66,6 +66,17 @@ class GreencubeThermalSpecification(models.Model):
         for spec in self:
             spec.study_count = len(spec.study_ids)
 
+    def action_view_studies(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Études",
+            "res_model": "greencube.cooling.study",
+            "view_mode": "list,form",
+            "domain": [("thermal_specification_id", "=", self.id)],
+            "context": {"default_thermal_specification_id": self.id},
+        }
+
     def _compute_is_locked(self):
         for spec in self:
             spec.is_locked = bool(spec.study_ids.filtered(lambda s: s.state in ("validated", "calculated")))

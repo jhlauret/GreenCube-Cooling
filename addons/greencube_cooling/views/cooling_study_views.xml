@@ -32,7 +32,7 @@
                 </header>
                 <sheet>
                     <div class="oe_button_box" name="button_box">
-                        <button name="result_count" type="object" class="oe_stat_button" icon="fa-bar-chart">
+                        <button name="action_view_results" type="object" class="oe_stat_button" icon="fa-bar-chart">
                             <field name="result_count" widget="statinfo" string="Résultats"/>
                         </button>
                     </div>
