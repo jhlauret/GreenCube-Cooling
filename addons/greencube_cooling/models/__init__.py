@@ -1,4 +1,5 @@
 from . import thermal_specification
+from . import cooling_calculation_snapshot
 from . import cooling_study
 from . import occupancy_profile
 from . import equipment_load

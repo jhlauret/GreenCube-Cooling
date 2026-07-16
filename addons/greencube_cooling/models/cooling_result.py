@@ -9,6 +9,7 @@ class GreencubeCoolingResult(models.Model):
     _order = "create_date desc"
 
     study_id = fields.Many2one("greencube.cooling.study", required=True, ondelete="cascade", index=True)
+    snapshot_id = fields.Many2one("greencube.cooling.calculation.snapshot", ondelete="restrict", index=True)
     solver_version_id = fields.Many2one("greencube.cooling.solver.version")
     state = fields.Selection(
         [("success", "Success"), ("partial", "Partial"), ("failed", "Failed"), ("superseded", "Superseded")],

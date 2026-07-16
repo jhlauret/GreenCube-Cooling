@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import hashlib
 import json
 import time
 
@@ -7,6 +8,9 @@ from odoo.exceptions import UserError, ValidationError
 
 from ..services.mercure import schemas as ms
 from ..services.mercure.engine import MercureError, run_mercure
+from ..services.mercure.serialization import mercure_input_from_dict, mercure_input_to_dict
+
+NON_CONFIRMED_PROVENANCES = ("estimated_reference", "estimated_manual", "missing_fallback")
 
 STATES = [
     ("draft", "Draft"),
@@ -94,9 +98,13 @@ class GreencubeCoolingStudy(models.Model):
     climate_scenario_ids = fields.One2many("greencube.cooling.climate.scenario", "study_id")
     result_ids = fields.One2many("greencube.cooling.result", "study_id")
     equipment_selection_ids = fields.One2many("greencube.cooling.equipment.selection", "study_id")
+    snapshot_ids = fields.One2many("greencube.cooling.calculation.snapshot", "study_id")
 
     result_count = fields.Integer(compute="_compute_result_count")
     active_result_id = fields.Many2one("greencube.cooling.result", compute="_compute_active_result", store=True)
+    active_snapshot_id = fields.Many2one(
+        "greencube.cooling.calculation.snapshot", compute="_compute_active_snapshot", store=True
+    )
 
     input_snapshot_json = fields.Text(readonly=True, copy=False)
     input_snapshot_hash = fields.Char(readonly=True, copy=False, index=True)
@@ -144,6 +152,12 @@ class GreencubeCoolingStudy(models.Model):
             successful = study.result_ids.filtered(lambda r: r.state == "success").sorted("create_date", reverse=True)
             study.active_result_id = successful[:1]
 
+    @api.depends("snapshot_ids.state")
+    def _compute_active_snapshot(self):
+        for study in self:
+            frozen = study.snapshot_ids.filtered(lambda s: s.state == "frozen")
+            study.active_snapshot_id = frozen[:1]
+
     LOCKED_STATES = ("validated",)
 
     def write(self, vals):
@@ -168,6 +182,142 @@ class GreencubeCoolingStudy(models.Model):
         if not self.occupancy_profile_ids:
             missing.append("occupancy")
         return missing
+
+    # ------------------------------------------------------------------
+    # GC-COOLING-13: structured validation ("review" screen backend)
+    # ------------------------------------------------------------------
+
+    def get_validation(self):
+        """Structured validation report: blocking errors, warnings, info,
+        and a provenance summary across all sub-lines. This is the single
+        source of truth the /validation API route and action_create_snapshot()
+        both rely on — the frontend must never decide readiness on its own.
+        """
+        self.ensure_one()
+        issues = []
+
+        def add_issue(code, severity, section_code, title, message, blocking=False, field_path=None):
+            issues.append(
+                {
+                    "id": f"{section_code}:{code}",
+                    "code": code,
+                    "severity": severity,
+                    "blocking": blocking,
+                    "section_code": section_code,
+                    "field_path": field_path,
+                    "title": title,
+                    "message": message,
+                }
+            )
+
+        if not self.thermal_specification_id:
+            add_issue(
+                "MODEL_MISSING", "error", "model", "Modèle manquant",
+                "Aucune spécification thermique GreenCube n'est associée à cette étude.", blocking=True,
+            )
+        if not self.latitude or not self.longitude:
+            add_issue(
+                "LOCATION_MISSING", "error", "location", "Localisation manquante",
+                "La latitude et la longitude doivent être renseignées.", blocking=True,
+            )
+        if not self.occupancy_profile_ids:
+            add_issue(
+                "OCCUPANCY_MISSING", "error", "usage", "Occupation manquante",
+                "Aucun profil d'occupation n'est défini pour cette étude.", blocking=True,
+            )
+        if not self.ventilation_profile_ids:
+            add_issue(
+                "VENTILATION_MISSING", "warning", "comfort", "Ventilation non renseignée",
+                "Aucun profil de ventilation défini ; les valeurs par défaut du modèle seront utilisées.",
+            )
+        if not self.equipment_load_ids:
+            add_issue(
+                "EQUIPMENT_MISSING", "info", "equipment", "Aucun équipement",
+                "Aucune charge d'équipement n'est déclarée pour cette étude.",
+            )
+
+        solver = self.env["greencube.cooling.solver.version"].search(
+            [("code", "=", "MERCURE"), ("state", "=", "active")], limit=1
+        )
+        if not solver:
+            add_issue(
+                "SOLVER_VERSION_MISSING", "error", "review", "Version du solver indisponible",
+                "Aucune version active du solver MERCURE n'est configurée.", blocking=True,
+            )
+
+        for line in self.occupancy_profile_ids:
+            if line.provenance in NON_CONFIRMED_PROVENANCES:
+                add_issue(
+                    "OCCUPANCY_ASSUMPTION", "warning", "usage", "Hypothèse d'occupation à confirmer",
+                    f"Le profil d'occupation « {line.usage_type} » utilise une valeur {line.provenance}.",
+                    field_path=f"occupancy_profile_ids/{line.id}",
+                )
+        for line in self.equipment_load_ids:
+            if line.provenance in NON_CONFIRMED_PROVENANCES:
+                add_issue(
+                    "EQUIPMENT_ASSUMPTION", "warning", "equipment", "Hypothèse d'équipement à confirmer",
+                    f"L'équipement « {line.name} » utilise une valeur {line.provenance}.",
+                    field_path=f"equipment_load_ids/{line.id}",
+                )
+        for line in self.ventilation_profile_ids:
+            if line.provenance in NON_CONFIRMED_PROVENANCES:
+                add_issue(
+                    "VENTILATION_ASSUMPTION", "warning", "comfort", "Hypothèse de ventilation à confirmer",
+                    f"Le profil de ventilation utilise une valeur {line.provenance}.",
+                    field_path=f"ventilation_profile_ids/{line.id}",
+                )
+        for line in self.shading_ids:
+            if not line.confirmed:
+                add_issue(
+                    "SHADING_UNCONFIRMED", "warning", "orientation", "Masque solaire non confirmé",
+                    f"Le masque solaire orienté {line.orientation} n'a pas été confirmé.",
+                    field_path=f"shading_ids/{line.id}",
+                )
+
+        blocking_count = sum(1 for i in issues if i["blocking"])
+        warning_count = sum(1 for i in issues if i["severity"] == "warning")
+        info_count = sum(1 for i in issues if i["severity"] == "info")
+
+        provenance_summary = {}
+        for recordset in (
+            self.occupancy_profile_ids,
+            self.equipment_load_ids,
+            self.ventilation_profile_ids,
+            self.shading_ids,
+        ):
+            for line in recordset:
+                provenance_summary[line.provenance] = provenance_summary.get(line.provenance, 0) + 1
+
+        return {
+            "study_id": self.id,
+            "issues": issues,
+            "blocking_count": blocking_count,
+            "warning_count": warning_count,
+            "info_count": info_count,
+            "ready": blocking_count == 0,
+            "provenance_summary": provenance_summary,
+            "confidence_score": self.confidence_score,
+        }
+
+    def action_confirm_assumptions(self):
+        """Bulk-confirm every non-measured/non-catalog sub-line (GC-COOLING-13
+        "confirmer les hypothèses non mesurées"), auditing the action on the
+        study's chatter (user, date, count) rather than a bespoke audit model.
+        """
+        self.ensure_one()
+        count = 0
+        for recordset in (self.occupancy_profile_ids, self.equipment_load_ids, self.ventilation_profile_ids):
+            confirmable = recordset.filtered(lambda line: line.provenance in NON_CONFIRMED_PROVENANCES)
+            if confirmable:
+                confirmable.write({"provenance": "user_confirmed"})
+                count += len(confirmable)
+        unconfirmed_shading = self.shading_ids.filtered(lambda s: not s.confirmed)
+        if unconfirmed_shading:
+            unconfirmed_shading.write({"confirmed": True})
+            count += len(unconfirmed_shading)
+        if count:
+            self.message_post(body=f"{count} hypothèse(s) confirmée(s) par {self.env.user.name}.")
+        return count
 
     def action_validate(self):
         for study in self:
@@ -366,36 +516,55 @@ class GreencubeCoolingStudy(models.Model):
         )
 
     def action_create_snapshot(self):
+        """Create an immutable greencube.cooling.calculation.snapshot record,
+        freezing the current MercureInput. Re-validates via get_validation()
+        (not the older _missing_required_sections()) so the same structured
+        blocking rules exposed to the API are what gates snapshot creation.
+        """
         self.ensure_one()
-        missing = self._missing_required_sections()
-        if missing:
-            raise UserError(f"Cannot snapshot an incomplete study. Missing: {', '.join(missing)}")
+        validation = self.get_validation()
+        if validation["blocking_count"]:
+            blocking_messages = [issue["message"] for issue in validation["issues"] if issue["blocking"]]
+            raise UserError("Cannot snapshot an incomplete or invalid study: " + "; ".join(blocking_messages))
 
         mercure_input = self._build_mercure_input()
-        payload = {
-            "study_id": self.id,
-            "revision": self.revision_number,
-            "company_id": self.company_id.id,
-            "user_id": self.env.user.id,
-            "date": fields.Datetime.now().isoformat(),
-            "thermal_specification": {
-                "id": self.thermal_specification_id.id,
-                "version": self.thermal_specification_id.version,
-            },
-        }
-        snapshot_hash = str(abs(hash(json.dumps(payload, sort_keys=True, default=str))))
-        self.write({"input_snapshot_json": json.dumps(payload, default=str), "input_snapshot_hash": snapshot_hash})
+        payload_dict = mercure_input_to_dict(mercure_input)
+        payload_json = json.dumps(payload_dict, sort_keys=True, default=str)
+        snapshot_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+        # Only one frozen snapshot per study at a time: creating a new one
+        # supersedes whatever was frozen before, so action_calculate() always
+        # has an unambiguous "active" snapshot to source from.
+        self.snapshot_ids.filtered(lambda s: s.state == "frozen").write({"state": "superseded"})
+        snapshot = self.env["greencube.cooling.calculation.snapshot"].create(
+            {
+                "study_id": self.id,
+                "study_revision_number": self.revision_number,
+                "thermal_specification_id": self.thermal_specification_id.id,
+                "thermal_specification_version": self.thermal_specification_id.version,
+                "requested_engine": "quick_solver",
+                "scenario_codes_json": json.dumps([s.code for s in mercure_input.climate_scenarios]),
+                "payload_json": payload_json,
+                "confirmed_assumptions_json": json.dumps(validation["provenance_summary"]),
+                "snapshot_hash": snapshot_hash,
+            }
+        )
+        # Kept in sync for backward compatibility with code/tests reading
+        # these study-level fields directly; the snapshot record is the
+        # actual source of truth.
+        self.write({"input_snapshot_json": payload_json, "input_snapshot_hash": snapshot_hash})
         return snapshot_hash
 
     def action_calculate(self):
         self.ensure_one()
-        if not self.input_snapshot_hash:
+        if not self.active_snapshot_id:
             self.action_create_snapshot()
 
+        snapshot = self.active_snapshot_id
         self.state = "calculating"
         started_at = time.monotonic()
         try:
-            mercure_input = self._build_mercure_input()
+            mercure_input = mercure_input_from_dict(json.loads(snapshot.payload_json))
             result = run_mercure(mercure_input)
         except (MercureError, UserError) as exc:
             self.state = "failed"
@@ -410,6 +579,7 @@ class GreencubeCoolingStudy(models.Model):
         result_record = self.env["greencube.cooling.result"].create(
             {
                 "study_id": self.id,
+                "snapshot_id": snapshot.id,
                 "solver_version_id": solver_version.id if solver_version else False,
                 "state": "success",
                 "sensible_load_w": governing.sensible_load_w,
@@ -425,7 +595,7 @@ class GreencubeCoolingStudy(models.Model):
                 "warnings_json": json.dumps([w.__dict__ for w in result.warnings]),
                 "main_load_drivers_json": json.dumps(result.main_load_drivers),
                 "duration_ms": duration_ms,
-                "snapshot_hash": self.input_snapshot_hash,
+                "snapshot_hash": snapshot.snapshot_hash,
             }
         )
         for entry in governing.breakdown:

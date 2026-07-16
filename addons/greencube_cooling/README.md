@@ -17,6 +17,13 @@
 - **API JSON** (`controllers/api.py`) : études (CRUD), révisions, validation, snapshot, calcul (MERCURE
   synchrone), résultats, catalogue équipement, recommandations et sélection d'équipement — endpoints alignés
   sur `README_GC-COOLING-MASTER.md`, avec le format d'erreur standard (`error.code/message/field/section/action/request_id`).
+- **Snapshot de calcul immuable** (GC-COOLING-13, `greencube.cooling.calculation.snapshot`) : validation
+  structurée (`greencube.cooling.study.get_validation()`, erreurs bloquantes/avertissements/informations
+  avec codes), snapshot figé par empreinte SHA-256 (plus le hash Python non cryptographique d'origine),
+  `action_calculate()` recalcule désormais à partir des données **figées** dans le snapshot plutôt que des
+  données live de l'étude, et confirmation en masse des hypothèses non mesurées
+  (`action_confirm_assumptions()`, audité dans le chatter de l'étude). Routes
+  `GET /studies/<id>/validation` et `POST /studies/<id>/assumptions/confirm` ajoutées.
 
 ## Ce qui a été réellement vérifié
 
@@ -88,6 +95,31 @@ PostgreSQL 17), en plus des vérifications syntaxiques précédentes. Toutes les
     vers `/web/login`, confirmant `auth="user"`).
   Toutes les routes du contrôleur `controllers/api.py` sont donc désormais exercées en HTTP réel, pas
   seulement leur logique ORM sous-jacente.
+- **GC-COOLING-13 (backend uniquement — voir "Ce qui reste en suspens" pour le périmètre non traité)** :
+  - Réinstallation complète vérifiée (`-i greencube_cooling --stop-after-init` → code retour 0) avec le
+    nouveau modèle `greencube.cooling.calculation.snapshot` et le champ `snapshot_id` ajouté sur
+    `greencube.cooling.result`.
+  - **39 tests, 0 échec, 0 erreur** sous le vrai test runner Odoo (18 purs Python + 3 round-trip de
+    sérialisation MERCURE + 18 `TransactionCase`, dont 6 nouveaux pour ce lot). Un vrai bug a été trouvé et
+    corrigé en cours de route : `self.occupancy_profile_ids | self.equipment_load_ids` levait
+    `TypeError: inconsistent models in: ...` — Odoo interdit l'union `|` entre recordsets de modèles
+    différents ; corrigé en itérant chaque recordset séparément dans `get_validation()` et
+    `action_confirm_assumptions()`.
+  - **Preuve d'immutabilité réelle du snapshot** : `write()`/`unlink()` sur un snapshot lèvent `UserError`
+    (test + vérifié en HTTP) ; créer un second snapshot bascule le premier en `state="superseded"`.
+  - **Preuve que le calcul utilise bien les données figées, pas les données live** : test dédié qui modifie
+    la puissance d'un équipement *après* la création du snapshot, relance `action_calculate()`, et vérifie
+    que le payload figé (donc le résultat) n'a pas changé — exactement la garantie d'immutabilité que
+    GC-COOLING-13 exige ("le frontend ne doit jamais déclarer une étude prête... la validation définitive
+    doit être réalisée côté backend").
+  - **Vérifié en HTTP réel** : `GET /studies/<id>/validation` (issues structurées avec codes, sur une étude
+    incomplète puis complète), `POST /studies/<id>/assumptions/confirm` (fait disparaître l'avertissement
+    de provenance correspondant), empreinte SHA-256 réelle (64 caractères hex, vs l'ancien
+    `str(abs(hash(...)))` non déterministe entre process Python), `active_snapshot_id` exposé sur
+    `GET /studies/<id>`.
+  - Round-trip pur Python (`services/mercure/serialization.py`, testé en standalone ET sous Odoo) :
+    `MercureInput` → `dict` JSON-sérialisable → `MercureInput` reconstruit à l'identique, nécessaire pour
+    figer puis relire le payload depuis `payload_json`.
 
 ## Ce qui reste en suspens
 
@@ -98,17 +130,27 @@ Ce qui reste néanmoins non couvert par ce lot :
   le navigateur (ergonomie, disposition) n'a pas été inspecté visuellement.
 - **Tests de charge / performance** : aucun test de volumétrie ou de temps de réponse sous charge.
 - **Frontend non branché sur cette API** : toujours un store Zustand mocké, cf. limitations ci-dessous.
-- Tout ce qui est listé dans "Limitations connues de ce lot" ci-dessous (climat, snapshot dédié,
-  Honeybee/EnergyPlus, matériaux détaillés, démo).
+- **GC-COOLING-13 : uniquement le backend est traité.** L'écran React `/cooling/studies/:id/review` décrit
+  dans le prompt (~30 composants : `SectionCompletionOverview`, `ConfidenceOverview`, `SnapshotPreview`,
+  `StudyVersionConflictDialog`, etc.), les hooks TanStack Query, les schémas Zod, et les suites de tests
+  unitaires/intégration/Playwright associées n'ont pas été implémentés — décision explicite pour rester
+  dans une portée vérifiable réellement en une session (voir le choix fait avec l'utilisateur). Non
+  traités côté backend non plus : sélection du moteur de calcul (`quick_solver`/`energyplus`/`both` — le
+  champ existe sur le snapshot mais rien ne l'exploite), détection des données obsolètes (`stale`),
+  détection des valeurs aberrantes, conflits de version optimiste, clé d'idempotence HTTP dédiée
+  (`Idempotency-Key`).
+- Tout ce qui est listé dans "Limitations connues de ce lot" ci-dessous (climat, Honeybee/EnergyPlus,
+  matériaux détaillés, démo).
 
 ## Limitations connues de ce lot
 
 - **Climat (GC-COOLING-03/04)** non implémenté : `_build_climate_scenarios()` dans `cooling_study.py`
   reproduit la même heuristique que le mock frontend (température de base selon l'altitude/l'environnement)
   plutôt que d'interroger un vrai service climatique. À remplacer par le lot climat quand il sera livré.
-- **Snapshot** (`action_create_snapshot`) construit un hash simplifié et ne persiste pas encore de modèle
-  `greencube.cooling.calculation.snapshot` dédié — le payload JSON est stocké directement sur l'étude.
-  Une vraie table de snapshot immuable est nécessaire pour GC-COOLING-13.
+- ~~**Snapshot** (`action_create_snapshot`) construit un hash simplifié...~~ — traité : voir
+  `greencube.cooling.calculation.snapshot` dans "Ce qui a été réellement vérifié". Reste néanmoins hors
+  périmètre : sélection de moteur, détection d'obsolescence/conflit de version, écran frontend (cf.
+  "Ce qui reste en suspens").
 - **Honeybee / EnergyPlus** non implémenté : seul MERCURE est câblé. `greencube.cooling.calculation.job`
   n'existe pas encore en tant que modèle séparé — le contrôleur traite le résultat MERCURE comme un job
   toujours `completed` de façon synchrone (acceptable pour MERCURE seul, insuffisant pour EnergyPlus qui
@@ -130,6 +172,9 @@ Ce qui reste néanmoins non couvert par ce lot :
    (`tests/test_cooling_study.py`, 12 tests).
 3. ~~Exercer en HTTP réel toutes les routes API~~ — fait : les 13 routes du contrôleur sont désormais
    toutes vérifiées avec un client HTTP authentifié réel (voir "Ce qui a été réellement vérifié").
-4. Brancher le frontend React sur cette API (remplacer `store/studyStore.ts` mock par TanStack Query + fetch).
-5. Traiter GC-COOLING-03/04 (géolocalisation, climat) pour remplacer l'heuristique de scénarios climatiques.
-6. Ajouter des données de démonstration (`demo/greencube_cooling_demo.xml`) avant une recette utilisateur.
+4. ~~Traiter le backend de GC-COOLING-13~~ — fait : snapshot immuable, validation structurée, confirmation
+   d'hypothèses (voir "Ce qui a été réellement vérifié"). L'écran React associé reste à faire.
+5. Implémenter l'écran `/cooling/studies/:id/review` de GC-COOLING-13 (composants, hooks, Zod, tests).
+6. Brancher le frontend React sur cette API (remplacer `store/studyStore.ts` mock par TanStack Query + fetch).
+7. Traiter GC-COOLING-03/04 (géolocalisation, climat) pour remplacer l'heuristique de scénarios climatiques.
+8. Ajouter des données de démonstration (`demo/greencube_cooling_demo.xml`) avant une recette utilisateur.

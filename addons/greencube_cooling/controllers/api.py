@@ -82,6 +82,7 @@ def _serialize_study(study):
         "confidence_score": study.confidence_score,
         "input_snapshot_hash": study.input_snapshot_hash or None,
         "active_result_id": study.active_result_id.id or None,
+        "active_snapshot_id": study.active_snapshot_id.id or None,
         "updated_at": study.write_date.isoformat() if study.write_date else None,
     }
 
@@ -226,6 +227,26 @@ class GreencubeCoolingApiController(http.Controller):
         except UserError as exc:
             return _error("COOLING_VALIDATION_FORBIDDEN", str(exc), status=403, section="studies")
         return _json_response({"data": _serialize_study(study)})
+
+    @http.route(f"{BASE}/studies/<int:study_id>/validation", type="http", auth="user", methods=["GET"], csrf=False)
+    def get_study_validation(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        return _json_response({"data": study.get_validation()})
+
+    @http.route(
+        f"{BASE}/studies/<int:study_id>/assumptions/confirm", type="http", auth="user", methods=["POST"], csrf=False
+    )
+    def confirm_assumptions(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        try:
+            count = study.action_confirm_assumptions()
+        except UserError as exc:
+            return _error("COOLING_ASSUMPTION_CONFIRMATION_FAILED", str(exc), status=422, section="review")
+        return _json_response({"data": {"study_id": study.id, "confirmed_count": count}})
 
     @http.route(f"{BASE}/studies/<int:study_id>/snapshots", type="http", auth="user", methods=["POST"], csrf=False)
     def create_snapshot(self, study_id, **kwargs):

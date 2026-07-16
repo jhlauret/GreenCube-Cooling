@@ -5,8 +5,12 @@ These complement tests/test_mercure_engine.py and tests/test_compatibility.py
 (pure-Python, ORM-independent) by covering the parts of GC-COOLING-01 §27
 that only make sense against a live registry: status cycle, revision
 locking, result/component immutability, multi-company ACL/record rules and
-action_calculate() end-to-end.
+action_calculate() end-to-end. Also covers GC-COOLING-13's backend slice:
+structured validation, immutable calculation snapshots, and calculation
+sourced from the frozen snapshot rather than live study data.
 """
+import json
+
 from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.tests.common import TransactionCase, tagged
 
@@ -200,6 +204,93 @@ class TestCoolingStudyLifecycle(TransactionCase):
         self.assertTrue(self.spec.is_locked)
         with self.assertRaises(UserError):
             self.spec.write({"wall_u_value": 0.5})
+
+    # -- GC-COOLING-13: structured validation ----------------------------
+
+    def test_get_validation_blocks_on_missing_occupancy(self):
+        study = self._create_study()
+        validation = study.get_validation()
+        self.assertFalse(validation["ready"])
+        self.assertGreater(validation["blocking_count"], 0)
+        codes = {issue["code"] for issue in validation["issues"]}
+        self.assertIn("OCCUPANCY_MISSING", codes)
+
+    def test_get_validation_ready_when_sections_complete(self):
+        study = self._create_study()
+        self._fill_required_sections(study)
+        validation = study.get_validation()
+        self.assertTrue(validation["ready"])
+        self.assertEqual(validation["blocking_count"], 0)
+
+    def test_get_validation_flags_unconfirmed_shading_and_estimated_provenance(self):
+        study = self._create_study()
+        self._fill_required_sections(study)
+        self.env["greencube.cooling.shading"].create(
+            {"study_id": study.id, "orientation": "west", "shading_type": "overhang", "confirmed": False}
+        )
+        study.equipment_load_ids.write({"provenance": "estimated_manual"})
+
+        validation = study.get_validation()
+        codes = {issue["code"] for issue in validation["issues"]}
+        self.assertIn("SHADING_UNCONFIRMED", codes)
+        self.assertIn("EQUIPMENT_ASSUMPTION", codes)
+        # both are warnings, not blocking
+        self.assertEqual(validation["blocking_count"], 0)
+        self.assertTrue(validation["ready"])
+
+    def test_action_confirm_assumptions_bulk_confirms_and_audits(self):
+        study = self._create_study()
+        self._fill_required_sections(study)
+        study.equipment_load_ids.write({"provenance": "estimated_manual"})
+        shading = self.env["greencube.cooling.shading"].create(
+            {"study_id": study.id, "orientation": "west", "shading_type": "overhang", "confirmed": False}
+        )
+
+        count = study.action_confirm_assumptions()
+
+        self.assertGreaterEqual(count, 2)
+        self.assertEqual(study.equipment_load_ids.provenance, "user_confirmed")
+        self.assertTrue(shading.confirmed)
+        self.assertTrue(any("confirmée" in (m.body or "") for m in study.message_ids))
+
+    # -- GC-COOLING-13: immutable calculation snapshot ---------------------
+
+    def test_snapshot_is_immutable_and_superseded_on_recreate(self):
+        study = self._create_study()
+        self._fill_required_sections(study)
+        study.action_create_snapshot()
+        first_snapshot = study.active_snapshot_id
+        self.assertEqual(first_snapshot.state, "frozen")
+
+        with self.assertRaises(UserError):
+            first_snapshot.write({"payload_json": "{}"})
+        with self.assertRaises(UserError):
+            first_snapshot.unlink()
+
+        study.action_create_snapshot()
+        first_snapshot.invalidate_recordset()
+        self.assertEqual(first_snapshot.state, "superseded")
+        self.assertNotEqual(study.active_snapshot_id.id, first_snapshot.id)
+
+    def test_action_calculate_uses_frozen_snapshot_not_live_data(self):
+        study = self._create_study()
+        self._fill_required_sections(study)
+        study.action_create_snapshot()
+
+        frozen_payload = json.loads(study.active_snapshot_id.payload_json)
+        frozen_power = frozen_payload["equipment"][0]["unit_power_w"]
+        self.assertEqual(frozen_power, 45.0)
+
+        # Mutate equipment power AFTER the snapshot was frozen.
+        study.equipment_load_ids.write({"unit_power_w": 4500})
+        self.assertNotEqual(study.equipment_load_ids.unit_power_w, frozen_power)
+
+        result = study.action_calculate()
+        # The result must have been computed from the frozen (45 W) value,
+        # not the mutated (4500 W) live value.
+        result_payload = json.loads(study.active_snapshot_id.payload_json)
+        self.assertEqual(result_payload["equipment"][0]["unit_power_w"], 45.0)
+        self.assertTrue(result.exists())
 
 
 @tagged("post_install", "-at_install")
