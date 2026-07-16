@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="rule_cooling_study_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Study: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_study"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+
+    <record id="rule_cooling_study_own_records_user" model="ir.rule">
+        <field name="name">GreenCube Cooling Study: user sees own studies only</field>
+        <field name="model_id" ref="model_greencube_cooling_study"/>
+        <field name="domain_force">[('user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+
+    <record id="rule_cooling_study_technician_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Study: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_study"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_thermal_specification_company" model="ir.rule">
+        <field name="name">GreenCube Thermal Specification: multi-company</field>
+        <field name="model_id" ref="model_greencube_thermal_specification"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+
+    <record id="rule_solver_version_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Solver Version: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_solver_version"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+
+    <record id="rule_equipment_selection_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Equipment Selection: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_equipment_selection"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+</odoo>

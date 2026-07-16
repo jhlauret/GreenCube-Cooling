@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <menuitem id="menu_greencube_cooling_root" name="GreenCube Cooling" sequence="60"/>
+
+    <menuitem id="menu_cooling_study" name="Études" parent="menu_greencube_cooling_root" action="action_cooling_study" sequence="10"/>
+
+    <menuitem id="menu_thermal_catalog" name="Catalogue thermique" parent="menu_greencube_cooling_root" sequence="20"/>
+    <menuitem id="menu_thermal_specification" name="Spécifications GreenCube" parent="menu_thermal_catalog" action="action_thermal_specification" sequence="10"/>
+
+    <menuitem id="menu_greencube_cooling_config" name="Configuration" parent="menu_greencube_cooling_root" sequence="90"
+              groups="group_greencube_cooling_manager"/>
+</odoo>

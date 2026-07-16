@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <record id="solver_version_mercure_1_0_0" model="greencube.cooling.solver.version">
+        <field name="name">MERCURE 1.0.0 (initial)</field>
+        <field name="code">MERCURE</field>
+        <field name="version">1.0.0</field>
+        <field name="state">active</field>
+        <field name="notes">Initial MVP release of the MERCURE fast cooling-load engine. Not certified for regulatory studies.</field>
+    </record>
+</odoo>

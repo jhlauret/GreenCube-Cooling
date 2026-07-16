@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_thermal_specification_list" model="ir.ui.view">
+        <field name="name">greencube.thermal.specification.list</field>
+        <field name="model">greencube.thermal.specification</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="code"/>
+                <field name="name"/>
+                <field name="version"/>
+                <field name="floor_area_m2"/>
+                <field name="internal_volume_m3"/>
+                <field name="active"/>
+                <field name="company_id" groups="base.group_multi_company"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_thermal_specification_form" model="ir.ui.view">
+        <field name="name">greencube.thermal.specification.form</field>
+        <field name="model">greencube.thermal.specification</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_create_new_version" type="object" string="Créer une nouvelle version" class="btn-secondary"/>
+                </header>
+                <sheet>
+                    <widget name="web_ribbon" title="Verrouillé" bg_color="text-bg-warning" invisible="not is_locked"/>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="study_count" type="object" class="oe_stat_button" icon="fa-list">
+                            <field name="study_count" widget="statinfo" string="Études"/>
+                        </button>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="code"/>
+                            <field name="version"/>
+                            <field name="active"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                        </group>
+                        <group>
+                            <field name="product_template_id"/>
+                            <field name="standard_model"/>
+                            <field name="thermal_mass_level"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Géométrie">
+                            <group>
+                                <field name="length_m"/>
+                                <field name="width_m"/>
+                                <field name="height_m"/>
+                                <field name="floor_area_m2" readonly="1"/>
+                                <field name="internal_volume_m3" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Enveloppe">
+                            <group>
+                                <field name="wall_u_value"/>
+                                <field name="roof_u_value"/>
+                                <field name="floor_u_value"/>
+                                <field name="airtightness_n50"/>
+                                <field name="thermal_bridge_factor"/>
+                                <field name="default_infiltration_ach"/>
+                            </group>
+                        </page>
+                        <page string="Façades et vitrages">
+                            <field name="facade_ids">
+                                <list editable="bottom">
+                                    <field name="orientation"/>
+                                    <field name="gross_area_m2"/>
+                                    <field name="glazing_area_m2"/>
+                                    <field name="opaque_area_m2" readonly="1"/>
+                                    <field name="window_u_value"/>
+                                    <field name="solar_factor_g"/>
+                                    <field name="default_shading_type"/>
+                                    <field name="default_shading_factor"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Notes">
+                            <field name="notes"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_thermal_specification" model="ir.actions.act_window">
+        <field name="name">Spécifications GreenCube</field>
+        <field name="res_model">greencube.thermal.specification</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>
