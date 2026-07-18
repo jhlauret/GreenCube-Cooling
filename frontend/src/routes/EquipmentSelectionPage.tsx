@@ -1,42 +1,81 @@
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/layout/AppHeader';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { useStudyStore } from '../store/studyStore';
-import { runMercure } from '../mercure/engine';
-import { mapStudyToMercureInput } from '../mercure/mapStudyToInput';
-import { CATALOG_PRODUCTS } from '../api/mockCatalog';
-import { assessCompatibility, COMPATIBILITY_LABELS, COMPATIBILITY_TONE } from '../equipment/compatibility';
+import { getEquipmentRecommendations, postEquipmentSelection, type EquipmentRecommendation } from '../api/study';
+import { ApiError } from '../api/client';
+
+const STATUS_LABELS: Record<string, string> = {
+  recommended: 'Recommandé',
+  strong_alternative: 'Bonne alternative',
+  compatible: 'Compatible',
+  compatible_with_conditions: 'Compatible sous conditions',
+  not_recommended: 'Non recommandé',
+  incompatible: 'Incompatible',
+};
+
+const STATUS_TONE: Record<string, 'brand' | 'warn' | 'neutral'> = {
+  recommended: 'brand',
+  strong_alternative: 'brand',
+  compatible: 'neutral',
+  compatible_with_conditions: 'warn',
+  not_recommended: 'warn',
+  incompatible: 'warn',
+};
 
 export function EquipmentSelectionPage() {
   const { studyId } = useParams<{ studyId: string }>();
   const study = useStudyStore((state) => (studyId ? state.studies[studyId] : undefined));
   const updateStudy = useStudyStore((state) => state.updateStudy);
 
-  const governing = useMemo(() => {
-    if (!study) return null;
-    try {
-      const result = runMercure(mapStudyToMercureInput(study));
-      return result.scenarioResults.find((s) => s.scenarioCode === result.governingScenarioCode) ?? null;
-    } catch {
-      return null;
+  const [recommendations, setRecommendations] = useState<EquipmentRecommendation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectingId, setSelectingId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!study?.backendId) {
+      setLoading(false);
+      return;
     }
-  }, [study]);
+    let cancelled = false;
+    getEquipmentRecommendations(study.backendId)
+      .then((data) => {
+        if (!cancelled) setRecommendations(data.sort((a, b) => (a.oversizing_ratio ?? 99) - (b.oversizing_ratio ?? 99)));
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(
+            err instanceof ApiError
+              ? err.message
+              : "Aucun résultat disponible : complétez d'abord la vérification et le calcul de puissance.",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [study?.backendId]);
+
+  async function select(productId: number) {
+    if (!study?.backendId) return;
+    setSelectingId(productId);
+    try {
+      await postEquipmentSelection(study.backendId, productId);
+      updateStudy(study.id, { selectedEquipmentProductId: String(productId), status: 'calculated' });
+    } finally {
+      setSelectingId(null);
+    }
+  }
 
   if (!studyId || !study) {
     return <Navigate to="/cooling/studies" replace />;
-  }
-
-  const assessments = governing
-    ? CATALOG_PRODUCTS.map((product) => ({ product, assessment: assessCompatibility(product, governing) })).sort(
-        (a, b) => a.assessment.oversizingRatio - b.assessment.oversizingRatio,
-      )
-    : [];
-
-  function select(productId: string) {
-    updateStudy(studyId!, { selectedEquipmentProductId: productId, status: 'calculated' });
   }
 
   return (
@@ -50,70 +89,65 @@ export function EquipmentSelectionPage() {
           </Link>
         </div>
 
-        {!governing ? (
+        {loading ? (
+          <Card>
+            <p className="text-sm text-ink-soft">Chargement des recommandations…</p>
+          </Card>
+        ) : error || !study.backendId ? (
           <Card>
             <p className="text-sm text-ink-soft">
-              Aucun résultat disponible : complétez d'abord la vérification et le calcul de puissance.
+              {error ?? "Aucun résultat disponible : complétez d'abord la vérification et le calcul de puissance."}
             </p>
           </Card>
         ) : (
-          <div className="flex flex-col gap-4">
-            <Card>
-              <p className="text-sm text-ink-soft">
-                Puissance recommandée : <span className="font-semibold text-ink">{(governing.recommendedLoadW / 1000).toFixed(2)} kW</span> ·
-                SHR : <span className="font-semibold text-ink">{governing.shr.toFixed(2)}</span>
-              </p>
-            </Card>
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {assessments.map(({ product, assessment }) => {
-                const selected = study.selectedEquipmentProductId === product.id;
-                const isIncompatible = assessment.status === 'incompatible';
-                return (
-                  <Card key={product.id} className={selected ? 'border-brand-500' : undefined}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-ink">{product.name}</h3>
-                        <p className="mt-1 text-xs text-ink-faint">{product.type}</p>
-                      </div>
-                      <Badge tone={COMPATIBILITY_TONE[assessment.status]}>{COMPATIBILITY_LABELS[assessment.status]}</Badge>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {recommendations.map(({ product, status, reasons }) => {
+              const selected = study.selectedEquipmentProductId === String(product.id);
+              const isIncompatible = status === 'incompatible';
+              return (
+                <Card key={product.id} className={selected ? 'border-brand-500' : undefined}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-ink">{product.name}</h3>
+                      <p className="mt-1 text-xs text-ink-faint">{product.type}</p>
                     </div>
+                    <Badge tone={STATUS_TONE[status] ?? 'neutral'}>{STATUS_LABELS[status] ?? status}</Badge>
+                  </div>
 
-                    <dl className="mt-4 grid grid-cols-2 gap-y-2 text-sm">
-                      <dt className="text-ink-faint">Capacité nominale</dt>
-                      <dd className="text-right text-ink">{(product.nominalCapacityW / 1000).toFixed(2)} kW</dd>
-                      <dt className="text-ink-faint">Capacité à 45 °C</dt>
-                      <dd className="text-right text-ink">{(product.capacityAt45CW / 1000).toFixed(2)} kW</dd>
-                      <dt className="text-ink-faint">EER / SEER</dt>
-                      <dd className="text-right text-ink">{product.eer} / {product.seer}</dd>
-                      <dt className="text-ink-faint">SHR</dt>
-                      <dd className="text-right text-ink">{product.shr}</dd>
-                      <dt className="text-ink-faint">Bruit</dt>
-                      <dd className="text-right text-ink">{product.noiseDb} dB</dd>
-                      <dt className="text-ink-faint">Alimentation</dt>
-                      <dd className="text-right text-ink">{product.powerSupply}</dd>
-                      <dt className="text-ink-faint">Prix indicatif</dt>
-                      <dd className="text-right text-ink">{product.priceEur.toLocaleString('fr-FR')} €</dd>
-                    </dl>
+                  <dl className="mt-4 grid grid-cols-2 gap-y-2 text-sm">
+                    <dt className="text-ink-faint">Capacité nominale</dt>
+                    <dd className="text-right text-ink">{((product.nominal_capacity_w ?? 0) / 1000).toFixed(2)} kW</dd>
+                    <dt className="text-ink-faint">Capacité à 45 °C</dt>
+                    <dd className="text-right text-ink">{((product.capacity_at_45c_w ?? 0) / 1000).toFixed(2)} kW</dd>
+                    <dt className="text-ink-faint">EER / SEER</dt>
+                    <dd className="text-right text-ink">{product.eer} / {product.seer}</dd>
+                    <dt className="text-ink-faint">SHR</dt>
+                    <dd className="text-right text-ink">{product.shr}</dd>
+                    <dt className="text-ink-faint">Bruit</dt>
+                    <dd className="text-right text-ink">{product.noise_db} dB</dd>
+                    <dt className="text-ink-faint">Alimentation</dt>
+                    <dd className="text-right text-ink">{product.power_supply}</dd>
+                    <dt className="text-ink-faint">Prix indicatif</dt>
+                    <dd className="text-right text-ink">{(product.list_price ?? 0).toLocaleString('fr-FR')} €</dd>
+                  </dl>
 
-                    <ul className="mt-3 flex flex-col gap-1 text-xs text-ink-soft">
-                      {assessment.reasons.map((r) => (
-                        <li key={r}>• {r}</li>
-                      ))}
-                    </ul>
+                  <ul className="mt-3 flex flex-col gap-1 text-xs text-ink-soft">
+                    {reasons.map((r) => (
+                      <li key={r}>• {r}</li>
+                    ))}
+                  </ul>
 
-                    <Button
-                      className="mt-4 w-full"
-                      variant={selected ? 'primary' : 'secondary'}
-                      disabled={isIncompatible}
-                      onClick={() => select(product.id)}
-                    >
-                      {selected ? 'Sélectionné ✓' : isIncompatible ? 'Incompatible' : 'Sélectionner'}
-                    </Button>
-                  </Card>
-                );
-              })}
-            </div>
+                  <Button
+                    className="mt-4 w-full"
+                    variant={selected ? 'primary' : 'secondary'}
+                    disabled={isIncompatible || selectingId === product.id}
+                    onClick={() => void select(product.id)}
+                  >
+                    {selected ? 'Sélectionné ✓' : isIncompatible ? 'Incompatible' : selectingId === product.id ? 'Sélection…' : 'Sélectionner'}
+                  </Button>
+                </Card>
+              );
+            })}
           </div>
         )}
       </main>

@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <record id="cooling_equipment_split_14" model="product.template">
+        <field name="name">GreenCube Split 1.4 kW</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="True"/>
+        <field name="purchase_ok" eval="True"/>
+        <field name="list_price">1190</field>
+        <field name="is_cooling_equipment" eval="True"/>
+        <field name="cooling_equipment_type">split_wall</field>
+        <field name="nominal_capacity_w">1400</field>
+        <field name="capacity_at_35c_w">1300</field>
+        <field name="capacity_at_45c_w">1050</field>
+        <field name="electrical_power_w">420</field>
+        <field name="eer">3.3</field>
+        <field name="seer">6.1</field>
+        <field name="cooling_shr">0.78</field>
+        <field name="noise_db">38</field>
+        <field name="max_outdoor_temperature_c">43</field>
+        <field name="power_supply">monophase</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="cooling_equipment_split_25" model="product.template">
+        <field name="name">GreenCube Split 2.5 kW</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="True"/>
+        <field name="purchase_ok" eval="True"/>
+        <field name="list_price">1590</field>
+        <field name="is_cooling_equipment" eval="True"/>
+        <field name="cooling_equipment_type">split_wall</field>
+        <field name="nominal_capacity_w">2500</field>
+        <field name="capacity_at_35c_w">2350</field>
+        <field name="capacity_at_45c_w">1900</field>
+        <field name="electrical_power_w">720</field>
+        <field name="eer">3.5</field>
+        <field name="seer">6.4</field>
+        <field name="cooling_shr">0.75</field>
+        <field name="noise_db">41</field>
+        <field name="max_outdoor_temperature_c">46</field>
+        <field name="power_supply">monophase</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="cooling_equipment_split_35" model="product.template">
+        <field name="name">GreenCube Split 3.5 kW</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="True"/>
+        <field name="purchase_ok" eval="True"/>
+        <field name="list_price">2090</field>
+        <field name="is_cooling_equipment" eval="True"/>
+        <field name="cooling_equipment_type">split_wall</field>
+        <field name="nominal_capacity_w">3500</field>
+        <field name="capacity_at_35c_w">3250</field>
+        <field name="capacity_at_45c_w">2600</field>
+        <field name="electrical_power_w">1050</field>
+        <field name="eer">3.3</field>
+        <field name="seer">6.2</field>
+        <field name="cooling_shr">0.72</field>
+        <field name="noise_db">44</field>
+        <field name="max_outdoor_temperature_c">46</field>
+        <field name="power_supply">monophase</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="cooling_equipment_multisplit_50" model="product.template">
+        <field name="name">GreenCube Multi-split 5.0 kW</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="True"/>
+        <field name="purchase_ok" eval="True"/>
+        <field name="list_price">3390</field>
+        <field name="is_cooling_equipment" eval="True"/>
+        <field name="cooling_equipment_type">multi_split</field>
+        <field name="nominal_capacity_w">5000</field>
+        <field name="capacity_at_35c_w">4600</field>
+        <field name="capacity_at_45c_w">3600</field>
+        <field name="electrical_power_w">1550</field>
+        <field name="eer">3.2</field>
+        <field name="seer">6.0</field>
+        <field name="cooling_shr">0.70</field>
+        <field name="noise_db">47</field>
+        <field name="max_outdoor_temperature_c">48</field>
+        <field name="power_supply">triphase</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="cooling_equipment_ducted_70" model="product.template">
+        <field name="name">GreenCube Ducted 7.0 kW</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="True"/>
+        <field name="purchase_ok" eval="True"/>
+        <field name="list_price">4590</field>
+        <field name="is_cooling_equipment" eval="True"/>
+        <field name="cooling_equipment_type">ducted</field>
+        <field name="nominal_capacity_w">7000</field>
+        <field name="capacity_at_35c_w">6500</field>
+        <field name="capacity_at_45c_w">5200</field>
+        <field name="electrical_power_w">2150</field>
+        <field name="eer">3.25</field>
+        <field name="seer">6.1</field>
+        <field name="cooling_shr">0.73</field>
+        <field name="noise_db">45</field>
+        <field name="max_outdoor_temperature_c">48</field>
+        <field name="power_supply">triphase</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="cooling_equipment_portable_20" model="product.template">
+        <field name="name">GreenCube Portable 2.0 kW</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="True"/>
+        <field name="purchase_ok" eval="True"/>
+        <field name="list_price">590</field>
+        <field name="is_cooling_equipment" eval="True"/>
+        <field name="cooling_equipment_type">portable</field>
+        <field name="nominal_capacity_w">2000</field>
+        <field name="capacity_at_35c_w">1750</field>
+        <field name="capacity_at_45c_w">1300</field>
+        <field name="electrical_power_w">750</field>
+        <field name="eer">2.7</field>
+        <field name="seer">5.2</field>
+        <field name="cooling_shr">0.65</field>
+        <field name="noise_db">52</field>
+        <field name="max_outdoor_temperature_c">40</field>
+        <field name="power_supply">monophase</field>
+        <field name="data_quality">catalog</field>
+    </record>
+</odoo>

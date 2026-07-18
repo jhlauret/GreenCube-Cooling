@@ -40,6 +40,8 @@ class GreencubeCoolingOccupancyProfile(models.Model):
     used_at_night = fields.Boolean(default=False)
     sensible_gain_per_person_w = fields.Float(default=75.0)
     latent_gain_per_person_g_h = fields.Float(default=60.0)
+    lighting_power_density_wm2 = fields.Float(default=6.0, help="Installed lighting power per m² of floor area.")
+    lighting_usage_fraction = fields.Float(default=0.6, help="Fraction of the day the lighting is actually switched on.")
     provenance = fields.Selection(
         [
             ("catalog", "Catalog"),

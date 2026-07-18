@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 import hashlib
 import json
+import logging
 import time
 
 from odoo import api, fields, models
 from odoo.exceptions import UserError, ValidationError
 
+from ..services.climate import ClimateServiceError, radiation_wm2_from_daily_sum
+from ..services.energyplus import EnergyPlusSimulationError, EnergyPlusUnavailableError, run_energyplus_simulation
 from ..services.mercure import schemas as ms
 from ..services.mercure.engine import MercureError, run_mercure
 from ..services.mercure.serialization import mercure_input_from_dict, mercure_input_to_dict
+
+_logger = logging.getLogger(__name__)
 
 NON_CONFIRMED_PROVENANCES = ("estimated_reference", "estimated_manual", "missing_fallback")
 
@@ -80,6 +85,7 @@ class GreencubeCoolingStudy(models.Model):
     climate_confirmed = fields.Boolean(default=False)
 
     cooling_setpoint_c = fields.Float(default=25.0)
+    night_setpoint_offset_c = fields.Float(default=1.0, help="Allowed night setpoint rise above the day setpoint.")
     target_humidity_percent = fields.Float(default=55.0)
     service_level = fields.Selection(
         [
@@ -374,43 +380,107 @@ class GreencubeCoolingStudy(models.Model):
     # Snapshot + MERCURE
     # ------------------------------------------------------------------
 
-    def _build_climate_scenarios(self):
-        self.ensure_one()
+    CLIMATE_SCENARIO_LABELS = {
+        "reference_summer": "Été de référence",
+        "hot_weather": "Forte chaleur",
+        "prolonged_heatwave": "Canicule prolongée",
+    }
+
+    def _climate_scenarios_from_heuristic(self):
+        """Fallback used when no coordinates are set yet or the historical
+        provider is unreachable: a conservative altitude-based estimate,
+        clearly weaker than real data but keeps the study calculable."""
         base_temp = 34.0 if self.altitude_m and self.altitude_m > 800 else 32.0
         peak_radiation = SOLAR_RADIATION_BY_ENVIRONMENT.get(self.environment_type, 380)
+        deltas = {"reference_summer": 0, "hot_weather": 5, "prolonged_heatwave": 10}
+        humidity = {"reference_summer": 45, "hot_weather": 38, "prolonged_heatwave": 30}
+        wind = {"reference_summer": 2, "hot_weather": 1.5, "prolonged_heatwave": 1}
+        ground = {"reference_summer": 18, "hot_weather": 19, "prolonged_heatwave": 21}
+        return [
+            {
+                "code": code,
+                "outdoor_temperature_c": base_temp + delta,
+                "outdoor_relative_humidity_percent": humidity[code],
+                "wind_speed_ms": wind[code],
+                "ground_temperature_c": ground[code],
+                "peak_radiation_wm2": peak_radiation,
+                "provenance": "estimated_reference",
+            }
+            for code, delta in deltas.items()
+        ]
+
+    def _build_climate_scenarios(self):
+        self.ensure_one()
+        environment_type = self.environment_type
+        scenarios = None
+        if self.latitude and self.longitude:
+            try:
+                fetched = self.env["greencube.cooling.climate.dataset"].get_or_fetch_scenarios(
+                    self.latitude, self.longitude, environment_type
+                )
+                environment_factor = SOLAR_RADIATION_BY_ENVIRONMENT.get(environment_type, 380) / 400.0
+                scenarios = [
+                    {
+                        "code": s["code"],
+                        "outdoor_temperature_c": s["outdoor_temperature_c"],
+                        "outdoor_relative_humidity_percent": s["outdoor_relative_humidity_percent"],
+                        "wind_speed_ms": s["wind_speed_ms"],
+                        "ground_temperature_c": s["ground_temperature_c"],
+                        "peak_radiation_wm2": radiation_wm2_from_daily_sum(s.get("shortwave_radiation_sum_mj_m2"))
+                        * environment_factor,
+                        "provenance": "api",
+                        "detail": {"reference_date": s.get("reference_date"), "sample_days": fetched["sample_days"]},
+                    }
+                    for s in fetched["scenarios"]
+                ]
+            except ClimateServiceError as exc:
+                _logger.warning("Historical climate lookup failed for study %s, falling back: %s", self.id, exc)
+
+        if scenarios is None:
+            scenarios = self._climate_scenarios_from_heuristic()
+
+        self._sync_climate_scenario_records(scenarios)
 
         def radiation(peak):
             return {"north": peak * 0.2, "south": peak * 0.6, "east": peak * 0.75, "west": peak}
 
         return [
             ms.ClimateScenario(
-                code="reference_summer",
-                label="Été de référence",
-                outdoor_temperature_c=base_temp,
-                outdoor_relative_humidity_percent=45,
-                solar_radiation_by_facade_wm2=radiation(peak_radiation),
-                wind_speed_ms=2,
-                ground_temperature_c=18,
-            ),
-            ms.ClimateScenario(
-                code="hot_weather",
-                label="Forte chaleur",
-                outdoor_temperature_c=base_temp + 5,
-                outdoor_relative_humidity_percent=38,
-                solar_radiation_by_facade_wm2=radiation(peak_radiation),
-                wind_speed_ms=1.5,
-                ground_temperature_c=19,
-            ),
-            ms.ClimateScenario(
-                code="prolonged_heatwave",
-                label="Canicule prolongée",
-                outdoor_temperature_c=base_temp + 10,
-                outdoor_relative_humidity_percent=30,
-                solar_radiation_by_facade_wm2=radiation(peak_radiation),
-                wind_speed_ms=1,
-                ground_temperature_c=21,
-            ),
+                code=s["code"],
+                label=self.CLIMATE_SCENARIO_LABELS[s["code"]],
+                outdoor_temperature_c=s["outdoor_temperature_c"],
+                outdoor_relative_humidity_percent=s["outdoor_relative_humidity_percent"],
+                solar_radiation_by_facade_wm2=radiation(s["peak_radiation_wm2"]),
+                wind_speed_ms=s["wind_speed_ms"],
+                ground_temperature_c=s["ground_temperature_c"],
+            )
+            for s in scenarios
         ]
+
+    def _sync_climate_scenario_records(self, scenarios):
+        """Persist the scenarios used for the last calculation onto the
+        study's greencube.cooling.climate.scenario child lines, so the
+        provenance (real historical data vs. fallback heuristic) and the
+        source values are visible/auditable instead of only living inside
+        the transient MERCURE payload."""
+        self.ensure_one()
+        existing_by_code = {rec.scenario_type: rec for rec in self.climate_scenario_ids}
+        for s in scenarios:
+            vals = {
+                "study_id": self.id,
+                "scenario_type": s["code"],
+                "outdoor_temperature_c": s["outdoor_temperature_c"],
+                "relative_humidity_percent": s["outdoor_relative_humidity_percent"],
+                "solar_radiation_wm2": s["peak_radiation_wm2"],
+                "wind_speed_ms": s["wind_speed_ms"],
+                "provenance": s["provenance"],
+                "detail_json": json.dumps(s.get("detail", {})),
+            }
+            record = existing_by_code.get(s["code"])
+            if record:
+                record.write(vals)
+            else:
+                self.env["greencube.cooling.climate.scenario"].create(vals)
 
     def _build_mercure_input(self):
         """Build the immutable MERCURE payload from the current study state.
@@ -495,27 +565,32 @@ class GreencubeCoolingStudy(models.Model):
                 latent_gain_per_person_g_h=occupancy.latent_gain_per_person_g_h if occupancy else 50,
             ),
             equipment=equipment,
-            lighting=ms.Lighting(mode="power_density", power_density_wm2=6, usage_fraction=0.6, fraction_dissipated_in_zone=1),
+            lighting=ms.Lighting(
+                mode="power_density",
+                power_density_wm2=occupancy.lighting_power_density_wm2 if occupancy else 6,
+                usage_fraction=occupancy.lighting_usage_fraction if occupancy else 0.6,
+                fraction_dissipated_in_zone=1,
+            ),
             ventilation=ms.Ventilation(
                 system_type=ventilation.ventilation_type if ventilation else "simple_flow",
                 airflow_m3h=ventilation.airflow_m3h if ventilation else 60,
                 heat_recovery_efficiency=(ventilation.heat_recovery_efficiency_percent / 100.0) if ventilation else 0.0,
-                bypass_active=False,
-                fan_power_w=30,
+                bypass_active=ventilation.bypass_active if ventilation else False,
+                fan_power_w=ventilation.fan_power_w if ventilation else 30,
                 fan_fraction_dissipated_in_zone=1.0,
                 fan_operating_fraction=1.0,
             ),
             infiltration=ms.Infiltration(method="n50_estimated", air_changes_per_hour=infiltration_ach),
             comfort=ms.Comfort(
                 cooling_setpoint_day_c=self.cooling_setpoint_c,
-                cooling_setpoint_night_c=self.cooling_setpoint_c + 1,
+                cooling_setpoint_night_c=self.cooling_setpoint_c + self.night_setpoint_offset_c,
                 target_relative_humidity_percent=self.target_humidity_percent,
                 maximum_acceptable_temperature_c=self.cooling_setpoint_c + 2,
             ),
             margin_fraction=SERVICE_LEVEL_MARGIN.get(self.service_level, 0.12),
         )
 
-    def action_create_snapshot(self):
+    def action_create_snapshot(self, engine="quick_solver"):
         """Create an immutable greencube.cooling.calculation.snapshot record,
         freezing the current MercureInput. Re-validates via get_validation()
         (not the older _missing_required_sections()) so the same structured
@@ -542,7 +617,7 @@ class GreencubeCoolingStudy(models.Model):
                 "study_revision_number": self.revision_number,
                 "thermal_specification_id": self.thermal_specification_id.id,
                 "thermal_specification_version": self.thermal_specification_id.version,
-                "requested_engine": "quick_solver",
+                "requested_engine": engine,
                 "scenario_codes_json": json.dumps([s.code for s in mercure_input.climate_scenarios]),
                 "payload_json": payload_json,
                 "confirmed_assumptions_json": json.dumps(validation["provenance_summary"]),
@@ -555,10 +630,26 @@ class GreencubeCoolingStudy(models.Model):
         self.write({"input_snapshot_json": payload_json, "input_snapshot_hash": snapshot_hash})
         return snapshot_hash
 
-    def action_calculate(self):
+    def action_calculate(self, engine=None, idempotency_key=None):
+        """engine: None keeps the active snapshot's requested engine
+        (default quick_solver); pass "quick_solver", "energyplus" or "both"
+        to (re)snapshot with that choice first. Only MERCURE (quick_solver)
+        actually produces the persisted numeric result today — energyplus/
+        both attempt a real Honeybee/EnergyPlus run (GC-COOLING-15) and, if
+        the simulation stack isn't installed on this server, fall back to
+        the MERCURE number with an explicit warning rather than fabricating
+        an EnergyPlus figure.
+        """
         self.ensure_one()
-        if not self.active_snapshot_id:
-            self.action_create_snapshot()
+        if idempotency_key:
+            existing = self.env["greencube.cooling.result"].search(
+                [("idempotency_key", "=", idempotency_key), ("study_id", "=", self.id)], limit=1
+            )
+            if existing:
+                return existing
+
+        if not self.active_snapshot_id or (engine and self.active_snapshot_id.requested_engine != engine):
+            self.action_create_snapshot(engine=engine or "quick_solver")
 
         snapshot = self.active_snapshot_id
         self.state = "calculating"
@@ -570,18 +661,39 @@ class GreencubeCoolingStudy(models.Model):
             self.state = "failed"
             raise UserError(f"MERCURE calculation failed: {exc}") from exc
 
+        result_state = "success"
+        energyplus_warnings = []
+        if snapshot.requested_engine in ("energyplus", "both"):
+            try:
+                run_energyplus_simulation(mercure_input)
+            except EnergyPlusUnavailableError as exc:
+                energyplus_warnings.append(
+                    {"code": "ENERGYPLUS_UNAVAILABLE", "message": str(exc), "severity": "warning"}
+                )
+                if snapshot.requested_engine == "energyplus":
+                    result_state = "partial"
+            except EnergyPlusSimulationError as exc:
+                energyplus_warnings.append(
+                    {"code": "ENERGYPLUS_NOT_IMPLEMENTED", "message": str(exc), "severity": "warning"}
+                )
+                if snapshot.requested_engine == "energyplus":
+                    result_state = "partial"
+
         duration_ms = int((time.monotonic() - started_at) * 1000)
         solver_version = self.env["greencube.cooling.solver.version"].search(
             [("code", "=", "MERCURE"), ("state", "=", "active")], limit=1
         )
         governing = next(r for r in result.scenario_results if r.scenario_code == result.governing_scenario_code)
+        commercial_tier = self.env["greencube.cooling.commercial.capacity"].find_tier_for_load_w(
+            result.recommended_capacity_w
+        )
 
         result_record = self.env["greencube.cooling.result"].create(
             {
                 "study_id": self.id,
                 "snapshot_id": snapshot.id,
                 "solver_version_id": solver_version.id if solver_version else False,
-                "state": "success",
+                "state": result_state,
                 "sensible_load_w": governing.sensible_load_w,
                 "latent_load_w": governing.latent_load_w,
                 "total_load_w": governing.total_load_w,
@@ -590,12 +702,14 @@ class GreencubeCoolingStudy(models.Model):
                 "recommended_capacity_w": result.recommended_capacity_w,
                 "recommended_capacity_kw": result.recommended_capacity_kw,
                 "recommended_capacity_btu_h": result.recommended_capacity_btu_h,
+                "commercial_capacity_id": commercial_tier.id if commercial_tier else False,
                 "confidence_score": result.confidence_score,
                 "governing_scenario_code": result.governing_scenario_code,
-                "warnings_json": json.dumps([w.__dict__ for w in result.warnings]),
+                "warnings_json": json.dumps([w.__dict__ for w in result.warnings] + energyplus_warnings),
                 "main_load_drivers_json": json.dumps(result.main_load_drivers),
                 "duration_ms": duration_ms,
                 "snapshot_hash": snapshot.snapshot_hash,
+                "idempotency_key": idempotency_key or None,
             }
         )
         for entry in governing.breakdown:

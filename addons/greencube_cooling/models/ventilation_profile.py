@@ -31,6 +31,10 @@ class GreencubeCoolingVentilationProfile(models.Model):
     )
     airtightness_n50 = fields.Float()
     infiltration_ach = fields.Float(default=0.5)
+    fan_power_w = fields.Float(default=30.0)
+    bypass_active = fields.Boolean(
+        default=False, help="Summer bypass of the heat recovery exchanger: fresh air is no longer preheated/precooled."
+    )
     provenance = fields.Selection(
         [
             ("catalog", "Catalog"),

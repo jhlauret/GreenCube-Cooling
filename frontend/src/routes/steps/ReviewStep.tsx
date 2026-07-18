@@ -1,37 +1,83 @@
-import { useOutletContext } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { useWizardNav } from '../useWizardNav';
 import type { StudyDraft } from '../../types/study';
+import { useStudyStore } from '../../store/studyStore';
+import { syncStudyToBackend } from '../../sync/syncStudy';
+import { confirmAssumptions, getValidation, type ValidationReport } from '../../api/study';
+import { ApiError } from '../../api/client';
 
 export function ReviewStep() {
   const { study } = useOutletContext<{ study: StudyDraft }>();
-  const { goToPrevious, goToNext } = useWizardNav('review');
+  const { goToPrevious } = useWizardNav('review');
+  const updateStudy = useStudyStore((state) => state.updateStudy);
+  const navigate = useNavigate();
+
+  const [validation, setValidation] = useState<ValidationReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [calculating, setCalculating] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      setLoading(true);
+      setSyncError(null);
+      try {
+        const backendId = await syncStudyToBackend(study, (id) => updateStudy(study.id, { backendId: id }));
+        const report = await getValidation(backendId);
+        if (!cancelled) setValidation(report);
+      } catch (err) {
+        if (!cancelled) {
+          setSyncError(err instanceof ApiError ? err.message : "Impossible de contacter l'API GreenCube Cooling.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void run();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [study.id]);
 
   const glazedArea = study.orientation.facades.filter((f) => f.enabled).reduce((s, f) => s + f.glazedAreaM2, 0);
 
-  const attentionPoints: { message: string; severity: 'low' | 'medium' }[] = [];
-  if (study.orientation.solarProtections.length === 0 && glazedArea > 0) {
-    attentionPoints.push({ message: 'Aucune protection solaire spécifiée.', severity: 'medium' });
-  }
-  if (study.model.airtightnessN50 === 0) {
-    attentionPoints.push({ message: "Étanchéité à l'air non renseignée.", severity: 'low' });
-  }
-  if (study.equipment.length === 0) {
-    attentionPoints.push({ message: 'Aucun équipement thermique renseigné.', severity: 'low' });
-  }
-  if (!study.location.climateConfirmed) {
-    attentionPoints.push({ message: 'Contexte climatique non confirmé.', severity: 'medium' });
+  async function handleConfirmAssumptions() {
+    if (!study.backendId) return;
+    setLoading(true);
+    try {
+      await confirmAssumptions(study.backendId);
+      const report = await getValidation(study.backendId);
+      setValidation(report);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const totalFields = 24;
-  const completedFields =
-    totalFields -
-    (study.location.climateConfirmed ? 0 : 3) -
-    (study.orientation.solarProtections.length === 0 ? 2 : 0) -
-    (study.equipment.length === 0 ? 3 : 0);
-  const reliabilityPercent = Math.round((completedFields / totalFields) * 100);
+  async function handleCalculate() {
+    setCalculating(true);
+    setSyncError(null);
+    try {
+      const backendId = await syncStudyToBackend(study, (id) => updateStudy(study.id, { backendId: id }));
+      navigate(`/cooling/studies/${study.id}/results`, { state: { backendId } });
+    } catch (err) {
+      setSyncError(err instanceof ApiError ? err.message : "Impossible de lancer le calcul.");
+    } finally {
+      setCalculating(false);
+    }
+  }
+
+  const reliabilityPercent = validation ? Math.round(validation.confidence_score * 100) : null;
+  const blockingIssues = validation?.issues.filter((i) => i.blocking) ?? [];
+  const warningIssues = validation?.issues.filter((i) => !i.blocking && i.severity === 'warning') ?? [];
+  const hasNonConfirmedAssumptions = Object.entries(validation?.provenance_summary ?? {}).some(
+    ([key, count]) => key !== 'catalog' && key !== 'api' && key !== 'user_confirmed' && count > 0,
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -40,19 +86,23 @@ export function ReviewStep() {
           <div>
             <h1 className="text-xl font-semibold text-ink">Vérifiez les données avant le calcul BTU</h1>
             <p className="mt-1 text-sm text-ink-soft">
-              Passez en revue les paramètres saisis. Les éléments estimés ou manquants peuvent impacter la précision du calcul.
+              Cette synthèse et le score de fiabilité proviennent de la validation structurée du backend
+              (GET /studies/&lt;id&gt;/validation), pas d'une estimation locale.
             </p>
           </div>
           <div className="w-full sm:w-64">
             <div className="flex items-baseline justify-between text-sm">
               <span className="text-ink-faint">Fiabilité des données</span>
-              <span className="text-lg font-semibold text-brand-700">{reliabilityPercent} %</span>
+              <span className="text-lg font-semibold text-brand-700">
+                {reliabilityPercent === null ? (loading ? '…' : '—') : `${reliabilityPercent} %`}
+              </span>
             </div>
             <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-surface-muted">
-              <div className="h-full bg-brand-600" style={{ width: `${reliabilityPercent}%` }} />
+              <div className="h-full bg-brand-600" style={{ width: `${reliabilityPercent ?? 0}%` }} />
             </div>
           </div>
         </div>
+        {syncError && <p className="mt-3 text-sm text-red-600">{syncError}</p>}
       </Card>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -106,19 +156,22 @@ export function ReviewStep() {
         </ReviewCard>
 
         <Card title="Points d'attention" className="sm:col-span-2 lg:col-span-1">
-          {attentionPoints.length === 0 ? (
-            <p className="text-sm text-ink-soft">Aucun point d'attention détecté.</p>
+          {blockingIssues.length === 0 && warningIssues.length === 0 ? (
+            <p className="text-sm text-ink-soft">{loading ? 'Analyse en cours…' : 'Aucun point d\'attention détecté.'}</p>
           ) : (
             <div className="flex flex-col gap-2">
-              {attentionPoints.map((p) => (
-                <div key={p.message} className="flex items-center justify-between gap-2 text-sm">
-                  <span className="text-ink-soft">⚠ {p.message}</span>
-                  <Badge tone={p.severity === 'medium' ? 'warn' : 'neutral'}>
-                    {p.severity === 'medium' ? 'Moyen' : 'Faible'}
-                  </Badge>
+              {[...blockingIssues, ...warningIssues].map((issue) => (
+                <div key={issue.code + (issue.field_path ?? '')} className="flex items-center justify-between gap-2 text-sm">
+                  <span className="text-ink-soft">⚠ {issue.message}</span>
+                  <Badge tone={issue.blocking ? 'warn' : 'neutral'}>{issue.blocking ? 'Bloquant' : 'Info'}</Badge>
                 </div>
               ))}
             </div>
+          )}
+          {hasNonConfirmedAssumptions && study.backendId && (
+            <Button variant="secondary" className="mt-3 w-fit" onClick={handleConfirmAssumptions} disabled={loading}>
+              Confirmer les hypothèses non mesurées
+            </Button>
           )}
         </Card>
       </div>
@@ -127,15 +180,17 @@ export function ReviewStep() {
         <div>
           <p className="text-sm font-medium text-ink">✅ Synthèse prête pour le solver</p>
           <p className="mt-1 text-sm text-ink-soft">
-            Le solver utilisera ces données pour estimer la puissance de refroidissement (BTU/h) et proposer le
-            dimensionnement recommandé.
+            Le solver MERCURE (backend Odoo) utilisera ces données pour estimer la puissance de refroidissement
+            (BTU/h) et proposer le dimensionnement recommandé.
           </p>
         </div>
         <div className="flex items-center gap-3">
           <Button variant="secondary" onClick={goToPrevious}>
             ← Retour
           </Button>
-          <Button onClick={goToNext}>Calculer la puissance de refroidissement →</Button>
+          <Button onClick={handleCalculate} disabled={calculating || blockingIssues.length > 0}>
+            {calculating ? 'Calcul en cours…' : 'Calculer la puissance de refroidissement →'}
+          </Button>
         </div>
       </Card>
     </div>

@@ -34,6 +34,8 @@ export type EnvironmentType =
 
 export interface LocationData {
   address: string;
+  city: string | null;
+  timezone: string | null;
   latitude: number | null;
   longitude: number | null;
   altitudeM: number | null;
@@ -119,6 +121,7 @@ export interface ComfortData {
 
 export interface StudyDraft {
   id: string;
+  backendId: number | null;
   name: string;
   createdAt: string;
   updatedAt: string;
@@ -137,12 +140,15 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
   const now = new Date().toISOString();
   return {
     id,
+    backendId: null,
     name,
     createdAt: now,
     updatedAt: now,
     status: 'draft',
     location: {
       address: '',
+      city: null,
+      timezone: null,
       latitude: null,
       longitude: null,
       altitudeM: null,

@@ -12,3 +12,5 @@ from . import cooling_result_component
 from . import equipment_selection
 from . import commercial_capacity
 from . import product_template
+from . import geo_cache
+from . import climate_dataset

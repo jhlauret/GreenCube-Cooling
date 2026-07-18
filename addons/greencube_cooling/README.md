@@ -121,6 +121,83 @@ PostgreSQL 17), en plus des vérifications syntaxiques précédentes. Toutes les
     `MercureInput` → `dict` JSON-sérialisable → `MercureInput` reconstruit à l'identique, nécessaire pour
     figer puis relire le payload depuis `payload_json`.
 
+## Lot suivant (2026-07-18) : climat/géo réels, câblage frontend, EnergyPlus honnête
+
+Ce lot a été développé et vérifié dans un environnement **sans instance Odoo installée** (pas de binaire
+`odoo-bin` disponible ici) : les vérifications ci-dessous se limitent donc à `ast.parse`/`ElementTree.parse`
+sur tout le module, à la ré-exécution des suites pures Python (`test_mercure_engine.py`,
+`test_mercure_serialization.py`, `test_compatibility.py` — toujours 21/21 OK), et à un test manuel en
+direct des services HTTP externes (géocodage, climat). **Les 12 tests `TransactionCase`
+(`test_cooling_study.py`) et l'installation réelle du module n'ont pas pu être rejoués ici** — à revalider
+sur une vraie instance Odoo 18 avant mise en production, comme le lot précédent l'avait fait.
+
+Changements :
+
+- **GC-COOLING-03 (géolocalisation) — implémenté** : `services/geo.py` interroge l'API Open-Meteo
+  (géocodage + altitude + fuseau horaire, gratuite, sans clé), avec un cache (`greencube.cooling.geo.cache`,
+  TTL 30 j). Nouvelles routes `GET /geocode?query=...` et `GET /geo-context?latitude=..&longitude=..`.
+  Le frontend (`LocationStep.tsx`) fait une vraie recherche d'adresse avec suggestions, utilise
+  `navigator.geolocation`, et affiche l'altitude/fuseau horaire réels au lieu des coordonnées figées
+  (46.2263/7.1231/1200 m).
+- **GC-COOLING-04 (climat historique) — implémenté** : `services/climate.py` interroge l'API archive
+  Open-Meteo (10 ans d'historique journalier réel, ERA5), dérive les 3 scénarios (`reference_summer` =
+  P90, `hot_weather` = P98, `prolonged_heatwave` = max observé) à partir de vraies journées, avec
+  cache 90 j (`greencube.cooling.climate.dataset`). `_build_climate_scenarios()` bascule sur ce service
+  dès que lat/lon sont connus, avec repli sur l'ancienne heuristique altitude si le service est
+  injoignable. Les scénarios utilisés sont désormais persistés sur `greencube.cooling.climate.scenario`
+  (provenance `api` ou `estimated_reference`), qui était un modèle orphelin jusqu'ici.
+- **Arrondi commercial (partie de GC-COOLING-16) — câblé** : `commercial_capacity.find_tier_for_load_w()`
+  est maintenant appelé par `action_calculate()` ; `greencube.cooling.result.commercial_capacity_id` et le
+  bloc `commercial_capacity` de `GET /results/<id>` exposent le palier retenu. Le modèle
+  `commercial.capacity` n'est donc plus mort.
+- **Champs figés rendus configurables (GC-COOLING-10/11/12)** : densité/fraction d'éclairage
+  (`occupancy_profile.lighting_power_density_wm2`/`lighting_usage_fraction`, remplace le `6`/`0.6` en dur),
+  puissance ventilateur et bypass été (`ventilation_profile.fan_power_w`/`bypass_active`, remplace `30`/
+  `False` en dur), décalage de consigne nocturne (`cooling_study.night_setpoint_offset_c`, remplace le
+  `+1°C` en dur). Toujours hors périmètre : plusieurs profils d'occupation par étude (le premier reste
+  seul utilisé, décision de portée MVP), calendrier hebdomadaire détaillé.
+- **API de sous-ressources — ajoutée (comblant un vrai trou de GC-COOLING-02)** : jusqu'ici l'API ne
+  permettait de créer/modifier que l'étude elle-même ; il n'existait aucune route pour la spécification
+  thermique, les profils d'occupation/ventilation, les protections solaires ou les lignes d'équipement.
+  Ajouté : `GET`/`PUT /studies/<id>/thermal-specification` (avec façades), `GET`/`PUT
+  /studies/<id>/occupancy-profile`, `GET`/`PUT /studies/<id>/ventilation-profile`, `GET`/`PUT
+  /studies/<id>/shading`, `GET`/`POST /studies/<id>/equipment-loads` +
+  `PATCH`/`DELETE /equipment-loads/<id>`.
+- **Frontend branché sur l'API réelle — fait (le point le plus significatif de ce lot)** : le frontend
+  n'était plus un simple mock isolé. `src/sync/syncStudy.ts` pousse l'état du wizard vers les nouvelles
+  routes ci-dessus (création de l'étude au premier sync, `backendId` stocké dans le store). `ReviewStep`
+  appelle réellement `GET /studies/<id>/validation` (fiabilité, points bloquants) et
+  `POST /assumptions/confirm` au lieu d'un score de fiabilité inventé (`24 - pénalités`). `ResultsPage`
+  déclenche `POST /studies/<id>/calculations` et affiche le résultat backend au lieu d'exécuter le port
+  TypeScript de MERCURE dans le navigateur. `EquipmentSelectionPage` appelle
+  `POST /studies/<id>/equipment-recommendations` et `POST /equipment-selections` au lieu d'utiliser
+  `api/mockCatalog.ts`. Les ports TS (`mercure/engine.ts`, `equipment/compatibility.ts`) et
+  `mockCatalog.ts` restent dans le repo (ils ont servi de référence au portage Python et à
+  `engine.test.ts`) mais ne sont plus appelés par aucune page.
+  Limite assumée : pas de TanStack Query/autosave par champ — la synchronisation se fait par appel
+  explicite à des points de contrôle (changement d'étape, ouverture de Review, lancement du calcul), pas
+  en temps réel à chaque frappe.
+- **Catalogue équipement réel — ajouté** : `data/cooling_equipment_data.xml` (6 `product.template` avec
+  `is_cooling_equipment=True`, mêmes caractéristiques que l'ancien `mockCatalog.ts`), chargé au lot data
+  (pas demo) donc disponible en production.
+- **GC-COOLING-05A/15 (Honeybee/EnergyPlus) — orchestration posée, sans simulation** :
+  `services/energyplus.py` détecte réellement la présence de `honeybee-energy`/`ladybug`
+  (pip) et du binaire `energyplus` (aucun n'est installé dans cet environnement). `action_calculate()`
+  accepte désormais `engine` (`quick_solver`/`energyplus`/`both`, via `POST /calculations` body
+  `{"engine": ...}`) : quand EnergyPlus est demandé et indisponible, un avertissement explicite
+  (`ENERGYPLUS_UNAVAILABLE`) est ajouté au résultat plutôt que d'inventer un chiffre, et le résultat passe
+  en état `partial` si EnergyPlus était le *seul* moteur demandé. Si le stack était installé, la
+  traduction géométrie→Honeybee et la simulation elle-même restent à écrire (ce n'était pas non plus fait
+  dans le lot précédent) — `run_energyplus_simulation()` le signale explicitement
+  (`EnergyPlusSimulationError`) plutôt que de silencieusement retomber sur MERCURE sans le dire.
+- **Idempotence et verrouillage optimiste (partie de GC-COOLING-02/13)** : en-tête `Idempotency-Key` lu
+  sur `POST /studies/<id>/calculations` (rejoue le résultat existant au lieu de recalculer) ; en-tête
+  `If-Match` (comparé à `updated_at`) sur `PATCH /studies/<id>`, retourne 409
+  `COOLING_STUDY_VERSION_CONFLICT` en cas de conflit.
+- **Données de démonstration ajoutées** : `demo/greencube_cooling_demo.xml` (une étude studio complète à
+  Lyon avec spécification, façades, occupation, équipements, ventilation), chargée uniquement avec
+  `--with-demo` (clé `demo` du manifeste, pas `data`).
+
 ## Ce qui reste en suspens
 
 Le runtime Odoo est maintenant disponible et a été utilisé pour toutes les vérifications ci-dessus.
@@ -144,25 +221,27 @@ Ce qui reste néanmoins non couvert par ce lot :
 
 ## Limitations connues de ce lot
 
-- **Climat (GC-COOLING-03/04)** non implémenté : `_build_climate_scenarios()` dans `cooling_study.py`
-  reproduit la même heuristique que le mock frontend (température de base selon l'altitude/l'environnement)
-  plutôt que d'interroger un vrai service climatique. À remplacer par le lot climat quand il sera livré.
+- ~~**Climat (GC-COOLING-03/04)** non implémenté~~ — traité, voir "Lot suivant" ci-dessus (Open-Meteo réel
+  + repli heuristique).
 - ~~**Snapshot** (`action_create_snapshot`) construit un hash simplifié...~~ — traité : voir
-  `greencube.cooling.calculation.snapshot` dans "Ce qui a été réellement vérifié". Reste néanmoins hors
-  périmètre : sélection de moteur, détection d'obsolescence/conflit de version, écran frontend (cf.
-  "Ce qui reste en suspens").
-- **Honeybee / EnergyPlus** non implémenté : seul MERCURE est câblé. `greencube.cooling.calculation.job`
-  n'existe pas encore en tant que modèle séparé — le contrôleur traite le résultat MERCURE comme un job
-  toujours `completed` de façon synchrone (acceptable pour MERCURE seul, insuffisant pour EnergyPlus qui
-  doit être asynchrone et isolé du process web).
+  `greencube.cooling.calculation.snapshot` dans "Ce qui a été réellement vérifié".
+- **Honeybee / EnergyPlus** : orchestration posée honnêtement (détection réelle de disponibilité,
+  avertissement explicite au lieu d'un faux résultat — voir "Lot suivant"), mais la traduction
+  géométrie→Honeybee et la simulation elle-même restent à écrire même si le stack était installé.
+  `greencube.cooling.calculation.job` n'existe toujours pas en tant que modèle séparé — le contrôleur
+  traite toujours le résultat comme un job `completed` synchrone (à revoir si EnergyPlus devient réel :
+  il doit être asynchrone et isolé du process web).
 - **`greencube.material.layer`** (couches de matériaux détaillées) non implémenté — hors périmètre MVP.
-- **`greencube.cooling.climate.dataset`** non implémenté — seul `climate.scenario` existe.
+- ~~**`greencube.cooling.climate.dataset`** non implémenté~~ — ajouté (cache 90 j des scénarios
+  historiques réels, voir "Lot suivant").
 - **CRM/Sales, devis, facturation** : explicitement hors périmètre, conformément aux limites du Master Prompt.
-- **Frontend non branché sur cette API** : le frontend React construit précédemment utilise encore un store
-  Zustand mocké (`localStorage`) ; le remplacer par de vrais appels à `/api/v1/greencube/cooling/...` est la
-  prochaine étape d'intégration.
-- **Aucune donnée de démonstration** n'a été créée (`demo/greencube_cooling_demo.xml` absent) — à ajouter
-  avant une recette utilisateur.
+- ~~**Frontend non branché sur cette API**~~ — traité, voir "Lot suivant" : le wizard synchronise
+  explicitement vers l'API à des points de contrôle (pas d'autosave par champ/TanStack Query).
+- ~~**Aucune donnée de démonstration**~~ — ajoutée (`demo/greencube_cooling_demo.xml`).
+- **Toujours hors périmètre** : plusieurs profils d'occupation par étude, calendrier hebdomadaire détaillé,
+  détection de données obsolètes (`stale`)/valeurs aberrantes, écran React dédié pour GC-COOLING-13
+  (~30 composants spécifiés : `SectionCompletionOverview`, `ConfidenceOverview`, etc. — `ReviewStep.tsx`
+  reste une version simplifiée qui appelle la vraie API mais sans ce niveau de détail visuel).
 
 ## Prochaines étapes suggérées
 

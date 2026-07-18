@@ -6,7 +6,8 @@ import { useWizardNav } from '../useWizardNav';
 import { useStudyStore } from '../../store/studyStore';
 import type { EnvironmentType, StudyDraft } from '../../types/study';
 import { defaultNextSteps } from './defaultNextSteps';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { fetchGeoContext, searchAddress, type GeoSearchResult } from '../../api/geo';
 
 const ENVIRONMENT_OPTIONS: { code: EnvironmentType; label: string }[] = [
   { code: 'urban_dense', label: 'Centre-ville dense' },
@@ -32,17 +33,90 @@ export function LocationStep() {
   const updateStudy = useStudyStore((state) => state.updateStudy);
   const { studyId, goToNext } = useWizardNav('location');
   const [address, setAddress] = useState(study.location.address);
+  const [suggestions, setSuggestions] = useState<GeoSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function detectClimate() {
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (address.trim().length < 3) {
+      setSuggestions([]);
+      return;
+    }
+    const controller = new AbortController();
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      setGeoError(null);
+      try {
+        const results = await searchAddress(address, controller.signal);
+        setSuggestions(results);
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setGeoError("Recherche d'adresse indisponible pour le moment.");
+        }
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+    return () => controller.abort();
+  }, [address]);
+
+  function applyLocation(latitude: number, longitude: number, extra: Partial<StudyDraft['location']> = {}) {
     updateStudy(studyId, {
-      location: {
-        ...study.location,
-        address,
-        latitude: 46.2263,
-        longitude: 7.1231,
-        altitudeM: 1200,
-      },
+      location: { ...study.location, ...extra, latitude, longitude },
     });
+  }
+
+  async function refineWithGeoContext(latitude: number, longitude: number) {
+    try {
+      const context = await fetchGeoContext(latitude, longitude);
+      updateStudy(studyId, {
+        location: {
+          ...study.location,
+          latitude,
+          longitude,
+          altitudeM: context.altitude_m ?? study.location.altitudeM,
+          timezone: context.timezone ?? study.location.timezone,
+        },
+      });
+    } catch {
+      // Keep the coordinates already applied; altitude/timezone refinement is best-effort.
+    }
+  }
+
+  function selectSuggestion(result: GeoSearchResult) {
+    setAddress(result.label);
+    setSuggestions([]);
+    applyLocation(result.latitude, result.longitude, {
+      address: result.label,
+      city: result.city,
+      altitudeM: result.altitude_m,
+      timezone: result.timezone,
+    });
+    void refineWithGeoContext(result.latitude, result.longitude);
+  }
+
+  function useMyPosition() {
+    setGeoError(null);
+    if (!navigator.geolocation) {
+      setGeoError("La géolocalisation n'est pas disponible dans ce navigateur.");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        applyLocation(latitude, longitude);
+        void refineWithGeoContext(latitude, longitude).finally(() => setLocating(false));
+      },
+      () => {
+        setGeoError('Position refusée ou indisponible.');
+        setLocating(false);
+      },
+      { enableHighAccuracy: false, timeout: 8000 },
+    );
   }
 
   function setEnvironment(env: EnvironmentType) {
@@ -60,15 +134,36 @@ export function LocationStep() {
         <div className="flex flex-col gap-4">
           <Card title="Où sera installé votre GreenCube ?">
             <div className="flex flex-col gap-3">
-              <input
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                placeholder="Adresse, commune ou coordonnées GPS"
-                className="rounded-lg border border-border px-4 py-2.5 text-sm outline-none focus:border-brand-500"
-              />
-              <Button variant="secondary" onClick={detectClimate} className="w-fit">
-                📍 Utiliser ma position
+              <div className="relative">
+                <input
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  placeholder="Adresse, commune ou coordonnées GPS"
+                  className="w-full rounded-lg border border-border px-4 py-2.5 text-sm outline-none focus:border-brand-500"
+                />
+                {searching && (
+                  <div className="absolute right-3 top-2.5 text-xs text-ink-faint">Recherche…</div>
+                )}
+                {suggestions.length > 0 && (
+                  <ul className="absolute z-10 mt-1 w-full rounded-lg border border-border bg-surface shadow-lg">
+                    {suggestions.map((s, i) => (
+                      <li key={`${s.latitude}-${s.longitude}-${i}`}>
+                        <button
+                          type="button"
+                          onClick={() => selectSuggestion(s)}
+                          className="block w-full px-4 py-2 text-left text-sm hover:bg-surface-muted"
+                        >
+                          {s.label}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <Button variant="secondary" onClick={useMyPosition} disabled={locating} className="w-fit">
+                {locating ? 'Localisation…' : '📍 Utiliser ma position'}
               </Button>
+              {geoError && <p className="text-xs text-red-600">{geoError}</p>}
               <div className="grid grid-cols-3 gap-3 rounded-xl border border-border bg-surface-muted p-4 text-sm">
                 <div>
                   <div className="text-ink-faint">Latitude</div>
@@ -129,19 +224,23 @@ export function LocationStep() {
             Carte (aperçu non disponible hors ligne)
           </div>
           <div className="grid grid-cols-2 gap-3 p-6 sm:grid-cols-3">
-            <MiniStat label="Température de référence" value={study.location.latitude ? '37 °C' : '—'} />
-            <MiniStat label="Scénario canicule renforcée" value={study.location.latitude ? '42 °C' : '—'} />
-            <MiniStat label="Nuits tropicales récentes" value={study.location.latitude ? 'Fréquentes' : '—'} />
+            <MiniStat label="Fuseau horaire" value={study.location.timezone ?? '—'} />
+            <MiniStat label="Commune" value={study.location.city ?? '—'} />
             <MiniStat label="Altitude estimée" value={study.location.altitudeM ? `${study.location.altitudeM} m` : '—'} />
-            <MiniStat label="Source climatique" value="API historique + signal récent" />
+            <MiniStat label="Source climatique" value="Open-Meteo (géocodage + altitude)" />
           </div>
           <div className="flex flex-col gap-3 border-t border-border p-6">
-            <p className="text-sm text-ink-soft">Les données climatiques correspondent-elles bien au site ?</p>
+            <p className="text-sm text-ink-soft">
+              Les scénarios climatiques détaillés (été de référence, forte chaleur, canicule) sont calculés à
+              l'étape de calcul à partir de ces coordonnées.
+            </p>
             <div className="flex gap-3">
               <Button onClick={confirm} disabled={!study.location.latitude}>
                 Confirmer
               </Button>
-              <Button variant="secondary">Modifier la localisation</Button>
+              <Button variant="secondary" onClick={() => setAddress('')}>
+                Modifier la localisation
+              </Button>
             </div>
           </div>
         </Card>

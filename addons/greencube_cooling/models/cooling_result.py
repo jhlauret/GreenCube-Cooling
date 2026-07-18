@@ -32,6 +32,7 @@ class GreencubeCoolingResult(models.Model):
     recommended_capacity_w = fields.Float()
     recommended_capacity_kw = fields.Float(digits=(8, 3))
     recommended_capacity_btu_h = fields.Float()
+    commercial_capacity_id = fields.Many2one("greencube.cooling.commercial.capacity", readonly=True)
     confidence_score = fields.Float(digits=(4, 3))
     warnings_json = fields.Text()
     main_load_drivers_json = fields.Text()

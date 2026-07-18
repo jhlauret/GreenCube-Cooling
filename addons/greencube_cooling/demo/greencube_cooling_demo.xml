@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo noupdate="1">
+    <record id="demo_thermal_spec_studio" model="greencube.thermal.specification">
+        <field name="name">GreenCube Studio 10m² — démo</field>
+        <field name="code">demo-studio-10</field>
+        <field name="version">1.0</field>
+        <field name="standard_model" eval="True"/>
+        <field name="length_m">4.0</field>
+        <field name="width_m">2.5</field>
+        <field name="height_m">2.5</field>
+        <field name="wall_u_value">0.18</field>
+        <field name="roof_u_value">0.16</field>
+        <field name="floor_u_value">0.20</field>
+        <field name="airtightness_n50">0.6</field>
+        <field name="thermal_mass_level">medium</field>
+        <field name="thermal_bridge_factor">0.05</field>
+        <field name="default_infiltration_ach">0.3</field>
+    </record>
+
+    <record id="demo_thermal_facade_south" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="demo_thermal_spec_studio"/>
+        <field name="orientation">south</field>
+        <field name="gross_area_m2">6.25</field>
+        <field name="glazing_area_m2">4.0</field>
+        <field name="window_u_value">1.3</field>
+        <field name="solar_factor_g">0.5</field>
+        <field name="visible_transmittance">0.7</field>
+        <field name="default_shading_type">external_blind</field>
+        <field name="default_shading_factor">0.6</field>
+    </record>
+
+    <record id="demo_thermal_facade_north" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="demo_thermal_spec_studio"/>
+        <field name="orientation">north</field>
+        <field name="gross_area_m2">6.25</field>
+        <field name="glazing_area_m2">0</field>
+    </record>
+
+    <record id="demo_study_studio" model="greencube.cooling.study">
+        <field name="name">Étude démo — Studio Lyon</field>
+        <field name="thermal_specification_id" ref="demo_thermal_spec_studio"/>
+        <field name="address">Lyon, France</field>
+        <field name="city">Lyon</field>
+        <field name="latitude">45.749</field>
+        <field name="longitude">4.848</field>
+        <field name="altitude_m">170</field>
+        <field name="timezone">Europe/Paris</field>
+        <field name="environment_type">suburban</field>
+        <field name="cooling_setpoint_c">25</field>
+        <field name="target_humidity_percent">55</field>
+        <field name="service_level">standard</field>
+    </record>
+
+    <record id="demo_occupancy_studio" model="greencube.cooling.occupancy.profile">
+        <field name="study_id" ref="demo_study_studio"/>
+        <field name="usage_type">housing</field>
+        <field name="usual_occupants">2</field>
+        <field name="maximum_occupants">3</field>
+        <field name="activity_level">seated</field>
+        <field name="usage_days">Tous les jours</field>
+        <field name="start_hour">18</field>
+        <field name="end_hour">23</field>
+        <field name="used_at_night" eval="True"/>
+    </record>
+
+    <record id="demo_equipment_fridge" model="greencube.cooling.equipment.load">
+        <field name="study_id" ref="demo_study_studio"/>
+        <field name="name">Réfrigérateur</field>
+        <field name="category">appliance</field>
+        <field name="quantity">1</field>
+        <field name="unit_power_w">120</field>
+        <field name="usage_hours_per_day">24</field>
+        <field name="simultaneity_percent">30</field>
+        <field name="permanent_operation" eval="True"/>
+    </record>
+
+    <record id="demo_equipment_laptop" model="greencube.cooling.equipment.load">
+        <field name="study_id" ref="demo_study_studio"/>
+        <field name="name">Ordinateur portable</field>
+        <field name="category">it</field>
+        <field name="quantity">1</field>
+        <field name="unit_power_w">65</field>
+        <field name="usage_hours_per_day">6</field>
+        <field name="simultaneity_percent">100</field>
+    </record>
+
+    <record id="demo_ventilation_studio" model="greencube.cooling.ventilation.profile">
+        <field name="study_id" ref="demo_study_studio"/>
+        <field name="ventilation_type">simple_flow</field>
+        <field name="airflow_m3h">45</field>
+        <field name="heat_recovery_efficiency_percent">0</field>
+        <field name="infiltration_ach">0.3</field>
+        <field name="fan_power_w">20</field>
+    </record>
+</odoo>

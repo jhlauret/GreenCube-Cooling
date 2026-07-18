@@ -13,6 +13,8 @@ from odoo import http
 from odoo.exceptions import UserError, ValidationError
 from odoo.http import request
 
+from ..services import geo as geo_service
+
 BASE = "/api/v1/greencube/cooling"
 
 
@@ -76,6 +78,7 @@ def _serialize_study(study):
         },
         "comfort": {
             "cooling_setpoint_c": study.cooling_setpoint_c,
+            "night_setpoint_offset_c": study.night_setpoint_offset_c,
             "target_humidity_percent": study.target_humidity_percent,
             "service_level": study.service_level,
         },
@@ -84,6 +87,134 @@ def _serialize_study(study):
         "active_result_id": study.active_result_id.id or None,
         "active_snapshot_id": study.active_snapshot_id.id or None,
         "updated_at": study.write_date.isoformat() if study.write_date else None,
+    }
+
+
+def _serialize_facade(facade):
+    return {
+        "id": facade.id,
+        "orientation": facade.orientation,
+        "gross_area_m2": facade.gross_area_m2,
+        "opaque_area_m2": facade.opaque_area_m2,
+        "glazing_area_m2": facade.glazing_area_m2,
+        "window_u_value": facade.window_u_value,
+        "solar_factor_g": facade.solar_factor_g,
+        "visible_transmittance": facade.visible_transmittance,
+        "default_shading_type": facade.default_shading_type,
+        "default_shading_factor": facade.default_shading_factor,
+    }
+
+
+def _serialize_thermal_spec(spec):
+    return {
+        "id": spec.id,
+        "name": spec.name,
+        "code": spec.code,
+        "version": spec.version,
+        "standard_model": spec.standard_model,
+        "product_template_id": spec.product_template_id.id or None,
+        "length_m": spec.length_m,
+        "width_m": spec.width_m,
+        "height_m": spec.height_m,
+        "floor_area_m2": spec.floor_area_m2,
+        "internal_volume_m3": spec.internal_volume_m3,
+        "wall_u_value": spec.wall_u_value,
+        "roof_u_value": spec.roof_u_value,
+        "floor_u_value": spec.floor_u_value,
+        "airtightness_n50": spec.airtightness_n50,
+        "thermal_mass_level": spec.thermal_mass_level,
+        "thermal_bridge_factor": spec.thermal_bridge_factor,
+        "default_infiltration_ach": spec.default_infiltration_ach,
+        "is_locked": spec.is_locked,
+        "facades": [_serialize_facade(f) for f in spec.facade_ids],
+    }
+
+
+def _serialize_occupancy(profile):
+    return {
+        "id": profile.id,
+        "usage_type": profile.usage_type,
+        "usual_occupants": profile.usual_occupants,
+        "maximum_occupants": profile.maximum_occupants,
+        "activity_level": profile.activity_level,
+        "usage_days": profile.usage_days,
+        "start_hour": profile.start_hour,
+        "end_hour": profile.end_hour,
+        "used_at_night": profile.used_at_night,
+        "sensible_gain_per_person_w": profile.sensible_gain_per_person_w,
+        "latent_gain_per_person_g_h": profile.latent_gain_per_person_g_h,
+        "lighting_power_density_wm2": profile.lighting_power_density_wm2,
+        "lighting_usage_fraction": profile.lighting_usage_fraction,
+        "provenance": profile.provenance,
+    }
+
+
+def _serialize_ventilation(profile):
+    return {
+        "id": profile.id,
+        "ventilation_type": profile.ventilation_type,
+        "airflow_m3h": profile.airflow_m3h,
+        "air_changes_per_hour": profile.air_changes_per_hour,
+        "heat_recovery_efficiency_percent": profile.heat_recovery_efficiency_percent,
+        "door_opening_frequency": profile.door_opening_frequency,
+        "window_opening_frequency": profile.window_opening_frequency,
+        "airtightness_n50": profile.airtightness_n50,
+        "infiltration_ach": profile.infiltration_ach,
+        "fan_power_w": profile.fan_power_w,
+        "bypass_active": profile.bypass_active,
+        "provenance": profile.provenance,
+    }
+
+
+def _serialize_shading(shading):
+    return {
+        "id": shading.id,
+        "orientation": shading.orientation,
+        "shading_type": shading.shading_type,
+        "efficiency_percent": shading.efficiency_percent,
+        "start_hour": shading.start_hour,
+        "end_hour": shading.end_hour,
+        "automatic": shading.automatic,
+        "confirmed": shading.confirmed,
+        "provenance": shading.provenance,
+    }
+
+
+def _serialize_equipment_load(line):
+    return {
+        "id": line.id,
+        "product_id": line.product_id.id or None,
+        "name": line.name,
+        "category": line.category,
+        "quantity": line.quantity,
+        "unit_power_w": line.unit_power_w,
+        "usage_hours_per_day": line.usage_hours_per_day,
+        "simultaneity_percent": line.simultaneity_percent,
+        "heat_dissipation_factor": line.heat_dissipation_factor,
+        "permanent_operation": line.permanent_operation,
+        "provenance": line.provenance,
+        "notes": line.notes,
+        "thermal_load_w": line.thermal_load_w,
+    }
+
+
+def _equipment_load_vals(body):
+    return {
+        k: body[k]
+        for k in (
+            "product_id",
+            "name",
+            "category",
+            "quantity",
+            "unit_power_w",
+            "usage_hours_per_day",
+            "simultaneity_percent",
+            "heat_dissipation_factor",
+            "permanent_operation",
+            "provenance",
+            "notes",
+        )
+        if k in body
     }
 
 
@@ -103,6 +234,12 @@ def _serialize_result(result):
         "recommended_capacity_w": result.recommended_capacity_w,
         "recommended_capacity_kw": result.recommended_capacity_kw,
         "recommended_capacity_btu_h": result.recommended_capacity_btu_h,
+        "commercial_capacity": {
+            "id": result.commercial_capacity_id.id,
+            "name": result.commercial_capacity_id.name,
+            "capacity_btu_h": result.commercial_capacity_id.capacity_btu_h,
+            "capacity_kw": result.commercial_capacity_id.capacity_kw,
+        } if result.commercial_capacity_id else None,
         "confidence_score": result.confidence_score,
         "warnings": json.loads(result.warnings_json or "[]"),
         "main_load_drivers": json.loads(result.main_load_drivers_json or "[]"),
@@ -174,6 +311,17 @@ class GreencubeCoolingApiController(http.Controller):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
             return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+
+        if_match = request.httprequest.headers.get("If-Match")
+        current_version = study.write_date.isoformat() if study.write_date else None
+        if if_match and current_version and if_match != current_version:
+            return _error(
+                "COOLING_STUDY_VERSION_CONFLICT",
+                "This study was modified by someone else since it was last read. Reload and retry.",
+                status=409,
+                section="studies",
+            )
+
         body = _body()
         if body is None:
             return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
@@ -191,6 +339,7 @@ class GreencubeCoolingApiController(http.Controller):
             "environment_type",
             "climate_confirmed",
             "cooling_setpoint_c",
+            "night_setpoint_offset_c",
             "target_humidity_percent",
             "service_level",
         }
@@ -200,6 +349,310 @@ class GreencubeCoolingApiController(http.Controller):
         except (UserError, ValidationError) as exc:
             return _error("COOLING_STUDY_LOCKED", str(exc), status=409, section="studies", action="create_revision")
         return _json_response({"data": _serialize_study(study)})
+
+    # ------------------------------------------------------------------
+    # Geolocation (GC-COOLING-03): address search, altitude, timezone
+    # ------------------------------------------------------------------
+
+    @http.route(f"{BASE}/geocode", type="http", auth="user", methods=["GET"], csrf=False)
+    def geocode(self, query=None, **kwargs):
+        if not query or not query.strip():
+            return _error("GEOCODE_QUERY_REQUIRED", "A non-empty 'query' parameter is required.", status=400, field="query")
+        try:
+            matches = request.env["greencube.cooling.geo.cache"].search_address(query)
+        except geo_service.GeoServiceError as exc:
+            return _error("GEO_PROVIDER_UNAVAILABLE", str(exc), status=502, section="location")
+        return _json_response({"data": matches})
+
+    @http.route(f"{BASE}/geo-context", type="http", auth="user", methods=["GET"], csrf=False)
+    def geo_context(self, latitude=None, longitude=None, **kwargs):
+        if latitude is None or longitude is None:
+            return _error(
+                "GEO_CONTEXT_COORDS_REQUIRED",
+                "Both 'latitude' and 'longitude' query parameters are required.",
+                status=400,
+                field="latitude",
+                section="location",
+            )
+        try:
+            lat, lon = float(latitude), float(longitude)
+        except ValueError:
+            return _error("GEO_CONTEXT_INVALID_COORDS", "latitude/longitude must be numeric.", status=400, section="location")
+        try:
+            context = request.env["greencube.cooling.geo.cache"].get_or_fetch_context(lat, lon)
+        except geo_service.GeoServiceError as exc:
+            return _error("GEO_PROVIDER_UNAVAILABLE", str(exc), status=502, section="location")
+        return _json_response({"data": context})
+
+    # ------------------------------------------------------------------
+    # Thermal specification (GC-COOLING-08/09): geometry, envelope, facades
+    # ------------------------------------------------------------------
+
+    @http.route(
+        f"{BASE}/studies/<int:study_id>/thermal-specification", type="http", auth="user", methods=["GET"], csrf=False
+    )
+    def get_thermal_specification(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        if not study.thermal_specification_id:
+            return _json_response({"data": None})
+        return _json_response({"data": _serialize_thermal_spec(study.thermal_specification_id)})
+
+    @http.route(
+        f"{BASE}/studies/<int:study_id>/thermal-specification", type="http", auth="user", methods=["PUT"], csrf=False
+    )
+    def put_thermal_specification(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        body = _body()
+        if body is None:
+            return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
+
+        spec_vals = {
+            k: body[k]
+            for k in (
+                "length_m",
+                "width_m",
+                "height_m",
+                "wall_u_value",
+                "roof_u_value",
+                "floor_u_value",
+                "airtightness_n50",
+                "thermal_mass_level",
+                "thermal_bridge_factor",
+                "default_infiltration_ach",
+                "product_template_id",
+                "standard_model",
+            )
+            if k in body
+        }
+        facades = body.get("facades")
+
+        spec = study.thermal_specification_id
+        try:
+            if spec and len(spec.study_ids) <= 1 and not spec.is_locked:
+                if spec_vals:
+                    spec.write(spec_vals)
+            else:
+                create_vals = {
+                    "name": body.get("name") or f"{study.name} — spécification",
+                    "code": f"study-{study.id}",
+                    "standard_model": False,
+                    "length_m": 1,
+                    "width_m": 1,
+                    "height_m": 1,
+                    "wall_u_value": 0.3,
+                    "roof_u_value": 0.3,
+                    "floor_u_value": 0.3,
+                    **spec_vals,
+                }
+                spec = request.env["greencube.thermal.specification"].create(create_vals)
+                study.write({"thermal_specification_id": spec.id})
+
+            if facades is not None:
+                spec.facade_ids.unlink()
+                for facade in facades:
+                    request.env["greencube.thermal.facade"].create(
+                        {
+                            "thermal_specification_id": spec.id,
+                            "orientation": facade["orientation"],
+                            "gross_area_m2": facade.get("gross_area_m2", 0),
+                            "glazing_area_m2": facade.get("glazing_area_m2", 0),
+                            "window_u_value": facade.get("window_u_value"),
+                            "solar_factor_g": facade.get("solar_factor_g"),
+                            "visible_transmittance": facade.get("visible_transmittance"),
+                            "default_shading_type": facade.get("default_shading_type", "none"),
+                            "default_shading_factor": facade.get("default_shading_factor", 1.0),
+                        }
+                    )
+        except (UserError, ValidationError) as exc:
+            return _error("THERMAL_SPEC_INVALID", str(exc), status=422, section="model")
+
+        return _json_response({"data": _serialize_thermal_spec(spec)})
+
+    # ------------------------------------------------------------------
+    # Occupancy profile (GC-COOLING-10)
+    # ------------------------------------------------------------------
+
+    @http.route(f"{BASE}/studies/<int:study_id>/occupancy-profile", type="http", auth="user", methods=["GET"], csrf=False)
+    def get_occupancy_profile(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        profile = study.occupancy_profile_ids[:1]
+        return _json_response({"data": _serialize_occupancy(profile) if profile else None})
+
+    @http.route(f"{BASE}/studies/<int:study_id>/occupancy-profile", type="http", auth="user", methods=["PUT"], csrf=False)
+    def put_occupancy_profile(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        body = _body()
+        if body is None:
+            return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
+        vals = {
+            k: body[k]
+            for k in (
+                "usage_type",
+                "usual_occupants",
+                "maximum_occupants",
+                "activity_level",
+                "usage_days",
+                "start_hour",
+                "end_hour",
+                "used_at_night",
+                "sensible_gain_per_person_w",
+                "latent_gain_per_person_g_h",
+                "lighting_power_density_wm2",
+                "lighting_usage_fraction",
+                "provenance",
+            )
+            if k in body
+        }
+        try:
+            profile = study.occupancy_profile_ids[:1]
+            if profile:
+                profile.write(vals)
+            else:
+                profile = request.env["greencube.cooling.occupancy.profile"].create({**vals, "study_id": study.id})
+        except ValidationError as exc:
+            return _error("OCCUPANCY_PROFILE_INVALID", str(exc), status=422, section="usage")
+        return _json_response({"data": _serialize_occupancy(profile)})
+
+    # ------------------------------------------------------------------
+    # Ventilation profile (GC-COOLING-12)
+    # ------------------------------------------------------------------
+
+    @http.route(f"{BASE}/studies/<int:study_id>/ventilation-profile", type="http", auth="user", methods=["GET"], csrf=False)
+    def get_ventilation_profile(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        profile = study.ventilation_profile_ids[:1]
+        return _json_response({"data": _serialize_ventilation(profile) if profile else None})
+
+    @http.route(f"{BASE}/studies/<int:study_id>/ventilation-profile", type="http", auth="user", methods=["PUT"], csrf=False)
+    def put_ventilation_profile(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        body = _body()
+        if body is None:
+            return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
+        vals = {
+            k: body[k]
+            for k in (
+                "ventilation_type",
+                "airflow_m3h",
+                "air_changes_per_hour",
+                "heat_recovery_efficiency_percent",
+                "door_opening_frequency",
+                "window_opening_frequency",
+                "airtightness_n50",
+                "infiltration_ach",
+                "fan_power_w",
+                "bypass_active",
+                "provenance",
+            )
+            if k in body
+        }
+        try:
+            profile = study.ventilation_profile_ids[:1]
+            if profile:
+                profile.write(vals)
+            else:
+                profile = request.env["greencube.cooling.ventilation.profile"].create({**vals, "study_id": study.id})
+        except ValidationError as exc:
+            return _error("VENTILATION_PROFILE_INVALID", str(exc), status=422, section="comfort")
+        return _json_response({"data": _serialize_ventilation(profile)})
+
+    # ------------------------------------------------------------------
+    # Solar shading (GC-COOLING-09)
+    # ------------------------------------------------------------------
+
+    @http.route(f"{BASE}/studies/<int:study_id>/shading", type="http", auth="user", methods=["GET"], csrf=False)
+    def get_shading(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        return _json_response({"data": [_serialize_shading(s) for s in study.shading_ids]})
+
+    @http.route(f"{BASE}/studies/<int:study_id>/shading", type="http", auth="user", methods=["PUT"], csrf=False)
+    def put_shading(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        body = _body()
+        if not isinstance(body, list):
+            return _error("INVALID_JSON", "Request body must be a JSON array of shading entries.", status=400)
+        try:
+            study.shading_ids.unlink()
+            for entry in body:
+                request.env["greencube.cooling.shading"].create(
+                    {
+                        "study_id": study.id,
+                        "orientation": entry["orientation"],
+                        "shading_type": entry.get("shading_type", "none"),
+                        "efficiency_percent": entry.get("efficiency_percent", 0),
+                        "start_hour": entry.get("start_hour", 0),
+                        "end_hour": entry.get("end_hour", 24),
+                        "automatic": entry.get("automatic", False),
+                        "confirmed": entry.get("confirmed", False),
+                        "provenance": entry.get("provenance", "user_confirmed"),
+                    }
+                )
+        except (UserError, ValidationError) as exc:
+            return _error("SHADING_INVALID", str(exc), status=422, section="orientation")
+        return _json_response({"data": [_serialize_shading(s) for s in study.shading_ids]})
+
+    # ------------------------------------------------------------------
+    # Equipment loads (GC-COOLING-11)
+    # ------------------------------------------------------------------
+
+    @http.route(f"{BASE}/studies/<int:study_id>/equipment-loads", type="http", auth="user", methods=["GET"], csrf=False)
+    def list_equipment_loads(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        return _json_response({"data": [_serialize_equipment_load(e) for e in study.equipment_load_ids]})
+
+    @http.route(f"{BASE}/studies/<int:study_id>/equipment-loads", type="http", auth="user", methods=["POST"], csrf=False)
+    def create_equipment_load(self, study_id, **kwargs):
+        study = request.env["greencube.cooling.study"].browse(study_id)
+        if not study.exists():
+            return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        body = _body()
+        if body is None:
+            return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
+        try:
+            line = request.env["greencube.cooling.equipment.load"].create({**_equipment_load_vals(body), "study_id": study.id})
+        except ValidationError as exc:
+            return _error("EQUIPMENT_LOAD_INVALID", str(exc), status=422, section="equipment")
+        return _json_response({"data": _serialize_equipment_load(line)}, status=201)
+
+    @http.route(f"{BASE}/equipment-loads/<int:line_id>", type="http", auth="user", methods=["PATCH"], csrf=False)
+    def update_equipment_load(self, line_id, **kwargs):
+        line = request.env["greencube.cooling.equipment.load"].browse(line_id)
+        if not line.exists():
+            return _error("EQUIPMENT_LOAD_NOT_FOUND", "Equipment load not found.", status=404, section="equipment")
+        body = _body()
+        if body is None:
+            return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
+        try:
+            line.write(_equipment_load_vals(body))
+        except ValidationError as exc:
+            return _error("EQUIPMENT_LOAD_INVALID", str(exc), status=422, section="equipment")
+        return _json_response({"data": _serialize_equipment_load(line)})
+
+    @http.route(f"{BASE}/equipment-loads/<int:line_id>", type="http", auth="user", methods=["DELETE"], csrf=False)
+    def delete_equipment_load(self, line_id, **kwargs):
+        line = request.env["greencube.cooling.equipment.load"].browse(line_id)
+        if not line.exists():
+            return _error("EQUIPMENT_LOAD_NOT_FOUND", "Equipment load not found.", status=404, section="equipment")
+        line.unlink()
+        return _json_response({"data": {"deleted": True}})
 
     # ------------------------------------------------------------------
     # Revisions / validation / snapshot / calculation
@@ -264,8 +717,11 @@ class GreencubeCoolingApiController(http.Controller):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
             return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
+        body = _body() or {}
+        engine = body.get("engine") if body.get("engine") in ("quick_solver", "energyplus", "both") else None
+        idempotency_key = request.httprequest.headers.get("Idempotency-Key")
         try:
-            result = study.action_calculate()
+            result = study.action_calculate(engine=engine, idempotency_key=idempotency_key)
         except UserError as exc:
             return _error("COOLING_CALCULATION_FAILED", str(exc), status=422, section="results")
         return _json_response(
