@@ -7,7 +7,7 @@ import { useWizardNav } from '../useWizardNav';
 import type { StudyDraft } from '../../types/study';
 import { useStudyStore } from '../../store/studyStore';
 import { syncStudyToBackend } from '../../sync/syncStudy';
-import { confirmAssumptions, getValidation, type ValidationReport } from '../../api/study';
+import { calculate, confirmAssumptions, getValidation, type ValidationReport } from '../../api/study';
 import { ApiError } from '../../api/client';
 
 export function ReviewStep() {
@@ -64,7 +64,9 @@ export function ReviewStep() {
     setSyncError(null);
     try {
       const backendId = await syncStudyToBackend(study, (id) => updateStudy(study.id, { backendId: id }));
-      navigate(`/cooling/studies/${study.id}/results`, { state: { backendId } });
+      const idempotencyKey = crypto.randomUUID();
+      const job = await calculate(backendId, idempotencyKey);
+      navigate(`/cooling/studies/${study.id}/results`, { state: { resultId: job.result_id } });
     } catch (err) {
       setSyncError(err instanceof ApiError ? err.message : "Impossible de lancer le calcul.");
     } finally {
@@ -72,7 +74,7 @@ export function ReviewStep() {
     }
   }
 
-  const reliabilityPercent = validation ? Math.round(validation.confidence_score * 100) : null;
+  const reliabilityPercent = validation ? Math.round(validation.completeness_score * 100) : null;
   const blockingIssues = validation?.issues.filter((i) => i.blocking) ?? [];
   const warningIssues = validation?.issues.filter((i) => !i.blocking && i.severity === 'warning') ?? [];
   const hasNonConfirmedAssumptions = Object.entries(validation?.provenance_summary ?? {}).some(
@@ -92,7 +94,7 @@ export function ReviewStep() {
           </div>
           <div className="w-full sm:w-64">
             <div className="flex items-baseline justify-between text-sm">
-              <span className="text-ink-faint">Fiabilité des données</span>
+              <span className="text-ink-faint">Complétude des données (avant calcul)</span>
               <span className="text-lg font-semibold text-brand-700">
                 {reliabilityPercent === null ? (loading ? '…' : '—') : `${reliabilityPercent} %`}
               </span>
@@ -110,9 +112,9 @@ export function ReviewStep() {
           <ReviewRow label="Adresse" value={study.location.address || '—'} />
           <ReviewRow
             label="Coordonnées"
-            value={study.location.latitude ? `${study.location.latitude.toFixed(4)}, ${study.location.longitude?.toFixed(4)}` : '—'}
+            value={study.location.latitude != null ? `${study.location.latitude.toFixed(4)}, ${study.location.longitude?.toFixed(4)}` : '—'}
           />
-          <ReviewRow label="Altitude" value={study.location.altitudeM ? `${study.location.altitudeM} m` : '—'} />
+          <ReviewRow label="Altitude" value={study.location.altitudeM != null ? `${study.location.altitudeM} m` : '—'} />
         </ReviewCard>
 
         <ReviewCard title="GreenCube" confirmed>

@@ -6,11 +6,12 @@ model layer (which owns all business rules), and serialize the response.
 No thermal logic lives here — MERCURE stays independent of the ORM and of
 this controller.
 """
+import functools
 import json
 import uuid
 
 from odoo import http
-from odoo.exceptions import UserError, ValidationError
+from odoo.exceptions import AccessError, MissingError, UserError, ValidationError
 from odoo.http import request
 
 from ..services import geo as geo_service
@@ -46,6 +47,26 @@ def _error(code, message, status=400, field=None, section=None, action=None):
     )
 
 
+def _guarded(fn):
+    """Turns ir.rule ownership violations into the standard JSON error
+    envelope instead of Odoo's default HTML/plain error page. Every route
+    handler on this controller is wrapped with this, since sub-resources
+    (occupancy, equipment, results, ...) are addressed directly by numeric
+    id and rely entirely on ir.rule for ownership enforcement (audit
+    P0-05)."""
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return fn(self, *args, **kwargs)
+        except AccessError as exc:
+            return _error("COOLING_ACCESS_DENIED", str(exc), status=403)
+        except MissingError as exc:
+            return _error("COOLING_NOT_FOUND", str(exc), status=404)
+
+    return wrapper
+
+
 def _body():
     try:
         raw = request.httprequest.get_data()
@@ -70,9 +91,13 @@ def _serialize_study(study):
             "address": study.address,
             "city": study.city,
             "zip": study.zip,
-            "latitude": study.latitude or None,
-            "longitude": study.longitude or None,
-            "altitude_m": study.altitude_m or None,
+            # Not `or None`: Odoo Float fields default to 0.0 for "unset",
+            # indistinguishable from a real equator/meridian coordinate, so
+            # coercing 0.0 to null would silently hide a valid location.
+            # `climate_confirmed` is the actual presence signal (GC-COOLING-03).
+            "latitude": study.latitude,
+            "longitude": study.longitude,
+            "altitude_m": study.altitude_m,
             "environment_type": study.environment_type or None,
             "climate_confirmed": study.climate_confirmed,
         },
@@ -286,11 +311,26 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/studies", type="http", auth="user", methods=["GET"], csrf=False)
-    def list_studies(self, **kwargs):
-        studies = request.env["greencube.cooling.study"].search([], order="create_date desc", limit=100)
-        return _json_response({"data": [_serialize_study(s) for s in studies]})
+    @_guarded
+    def list_studies(self, limit=None, offset=None, search=None, **kwargs):
+        try:
+            limit = max(1, min(int(limit), 200)) if limit else 50
+            offset = max(0, int(offset)) if offset else 0
+        except (TypeError, ValueError):
+            return _error("COOLING_INVALID_PAGINATION", "limit/offset must be integers.", status=400, section="studies")
+        domain = [("name", "ilike", search)] if search else []
+        Study = request.env["greencube.cooling.study"]
+        total = Study.search_count(domain)
+        studies = Study.search(domain, order="create_date desc", limit=limit, offset=offset)
+        return _json_response(
+            {
+                "data": [_serialize_study(s) for s in studies],
+                "meta": {"total": total, "limit": limit, "offset": offset},
+            }
+        )
 
     @http.route(f"{BASE}/studies", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def create_study(self, **kwargs):
         body = _body()
         if body is None:
@@ -300,6 +340,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_study(study)}, status=201)
 
     @http.route(f"{BASE}/studies/<int:study_id>", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_study(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -307,6 +348,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_study(study)})
 
     @http.route(f"{BASE}/studies/<int:study_id>", type="http", auth="user", methods=["PATCH"], csrf=False)
+    @_guarded
     def patch_study(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -355,6 +397,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/geocode", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def geocode(self, query=None, **kwargs):
         if not query or not query.strip():
             return _error("GEOCODE_QUERY_REQUIRED", "A non-empty 'query' parameter is required.", status=400, field="query")
@@ -365,6 +408,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": matches})
 
     @http.route(f"{BASE}/geo-context", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def geo_context(self, latitude=None, longitude=None, **kwargs):
         if latitude is None or longitude is None:
             return _error(
@@ -391,6 +435,7 @@ class GreencubeCoolingApiController(http.Controller):
     @http.route(
         f"{BASE}/studies/<int:study_id>/thermal-specification", type="http", auth="user", methods=["GET"], csrf=False
     )
+    @_guarded
     def get_thermal_specification(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -402,6 +447,7 @@ class GreencubeCoolingApiController(http.Controller):
     @http.route(
         f"{BASE}/studies/<int:study_id>/thermal-specification", type="http", auth="user", methods=["PUT"], csrf=False
     )
+    @_guarded
     def put_thermal_specification(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -432,7 +478,7 @@ class GreencubeCoolingApiController(http.Controller):
 
         spec = study.thermal_specification_id
         try:
-            if spec and len(spec.study_ids) <= 1 and not spec.is_locked:
+            if spec and not spec.standard_model and len(spec.study_ids) <= 1 and not spec.is_locked:
                 if spec_vals:
                     spec.write(spec_vals)
             else:
@@ -477,6 +523,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/studies/<int:study_id>/occupancy-profile", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_occupancy_profile(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -485,6 +532,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_occupancy(profile) if profile else None})
 
     @http.route(f"{BASE}/studies/<int:study_id>/occupancy-profile", type="http", auth="user", methods=["PUT"], csrf=False)
+    @_guarded
     def put_occupancy_profile(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -526,6 +574,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/studies/<int:study_id>/ventilation-profile", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_ventilation_profile(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -534,6 +583,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_ventilation(profile) if profile else None})
 
     @http.route(f"{BASE}/studies/<int:study_id>/ventilation-profile", type="http", auth="user", methods=["PUT"], csrf=False)
+    @_guarded
     def put_ventilation_profile(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -573,6 +623,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/studies/<int:study_id>/shading", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_shading(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -580,6 +631,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": [_serialize_shading(s) for s in study.shading_ids]})
 
     @http.route(f"{BASE}/studies/<int:study_id>/shading", type="http", auth="user", methods=["PUT"], csrf=False)
+    @_guarded
     def put_shading(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -612,6 +664,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/studies/<int:study_id>/equipment-loads", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def list_equipment_loads(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -619,6 +672,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": [_serialize_equipment_load(e) for e in study.equipment_load_ids]})
 
     @http.route(f"{BASE}/studies/<int:study_id>/equipment-loads", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def create_equipment_load(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -633,6 +687,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_equipment_load(line)}, status=201)
 
     @http.route(f"{BASE}/equipment-loads/<int:line_id>", type="http", auth="user", methods=["PATCH"], csrf=False)
+    @_guarded
     def update_equipment_load(self, line_id, **kwargs):
         line = request.env["greencube.cooling.equipment.load"].browse(line_id)
         if not line.exists():
@@ -647,6 +702,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_equipment_load(line)})
 
     @http.route(f"{BASE}/equipment-loads/<int:line_id>", type="http", auth="user", methods=["DELETE"], csrf=False)
+    @_guarded
     def delete_equipment_load(self, line_id, **kwargs):
         line = request.env["greencube.cooling.equipment.load"].browse(line_id)
         if not line.exists():
@@ -659,6 +715,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/studies/<int:study_id>/revisions", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def create_revision(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -671,6 +728,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_study(revision)}, status=201)
 
     @http.route(f"{BASE}/studies/<int:study_id>/validate", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def validate_study(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -682,6 +740,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_study(study)})
 
     @http.route(f"{BASE}/studies/<int:study_id>/validation", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_study_validation(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -691,6 +750,7 @@ class GreencubeCoolingApiController(http.Controller):
     @http.route(
         f"{BASE}/studies/<int:study_id>/assumptions/confirm", type="http", auth="user", methods=["POST"], csrf=False
     )
+    @_guarded
     def confirm_assumptions(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -702,6 +762,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": {"study_id": study.id, "confirmed_count": count}})
 
     @http.route(f"{BASE}/studies/<int:study_id>/snapshots", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def create_snapshot(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -713,6 +774,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": {"study_id": study.id, "snapshot_hash": snapshot_hash}}, status=201)
 
     @http.route(f"{BASE}/studies/<int:study_id>/calculations", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def create_calculation(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -739,6 +801,7 @@ class GreencubeCoolingApiController(http.Controller):
         )
 
     @http.route(f"{BASE}/calculations/<int:job_id>", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_calculation(self, job_id, **kwargs):
         result = request.env["greencube.cooling.result"].browse(job_id)
         if not result.exists():
@@ -752,6 +815,7 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/results/<int:result_id>", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def get_result(self, result_id, **kwargs):
         result = request.env["greencube.cooling.result"].browse(result_id)
         if not result.exists():
@@ -759,6 +823,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": _serialize_result(result)})
 
     @http.route(f"{BASE}/studies/<int:study_id>/results", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def list_results(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -770,11 +835,13 @@ class GreencubeCoolingApiController(http.Controller):
     # ------------------------------------------------------------------
 
     @http.route(f"{BASE}/equipment-catalog", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def equipment_catalog(self, **kwargs):
         products = request.env["product.template"].search([("is_cooling_equipment", "=", True)])
         return _json_response({"data": [_serialize_product(p) for p in products]})
 
     @http.route(f"{BASE}/studies/<int:study_id>/equipment-recommendations", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def equipment_recommendations(self, study_id, **kwargs):
         from ..services.compatibility import ProductTechnicalData, assess_compatibility
 
@@ -806,6 +873,7 @@ class GreencubeCoolingApiController(http.Controller):
         return _json_response({"data": recommendations})
 
     @http.route(f"{BASE}/studies/<int:study_id>/equipment-selections", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
     def list_equipment_selections(self, study_id, **kwargs):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
@@ -828,6 +896,7 @@ class GreencubeCoolingApiController(http.Controller):
         )
 
     @http.route(f"{BASE}/studies/<int:study_id>/equipment-selections", type="http", auth="user", methods=["POST"], csrf=False)
+    @_guarded
     def create_equipment_selection(self, study_id, **kwargs):
         from ..services.compatibility import ProductTechnicalData, assess_compatibility
 

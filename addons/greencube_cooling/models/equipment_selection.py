@@ -45,3 +45,18 @@ class GreencubeCoolingEquipmentSelection(models.Model):
             if selection.state == "validated":
                 raise UserError("A validated selection cannot be superseded directly; create a new revision.")
             selection.state = "superseded"
+
+    def write(self, vals):
+        # A validated selection is historical/commercial record: only a
+        # state transition away from "validated" is ever allowed, and only
+        # through action_supersede's own guarded write() call below (never
+        # a direct field edit). audit P1-08: write()/unlink() were
+        # previously unrestricted once a selection reached "validated".
+        if any(selection.state == "validated" for selection in self) and set(vals.keys()) != {"state"}:
+            raise UserError("A validated equipment selection is immutable; create a new selection instead.")
+        return super().write(vals)
+
+    def unlink(self):
+        if any(selection.state == "validated" for selection in self):
+            raise UserError("A validated equipment selection cannot be deleted.")
+        return super().unlink()

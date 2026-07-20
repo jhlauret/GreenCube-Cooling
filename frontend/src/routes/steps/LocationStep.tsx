@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchGeoContext, searchAddress, type GeoSearchResult } from '../../api/geo';
 
 const ENVIRONMENT_OPTIONS: { code: EnvironmentType; label: string }[] = [
-  { code: 'urban_dense', label: 'Centre-ville dense' },
+  { code: 'dense_urban', label: 'Centre-ville dense' },
   { code: 'suburban', label: 'Périurbain' },
   { code: 'rural', label: 'Campagne' },
   { code: 'mountain', label: 'Montagne' },
@@ -168,19 +168,19 @@ export function LocationStep() {
                 <div>
                   <div className="text-ink-faint">Latitude</div>
                   <div className="font-medium text-ink">
-                    {study.location.latitude ? `${study.location.latitude.toFixed(4)} °N` : '—'}
+                    {study.location.latitude != null ? `${study.location.latitude.toFixed(4)} °N` : '—'}
                   </div>
                 </div>
                 <div>
                   <div className="text-ink-faint">Longitude</div>
                   <div className="font-medium text-ink">
-                    {study.location.longitude ? `${study.location.longitude.toFixed(4)} °E` : '—'}
+                    {study.location.longitude != null ? `${study.location.longitude.toFixed(4)} °E` : '—'}
                   </div>
                 </div>
                 <div>
                   <div className="text-ink-faint">Altitude</div>
                   <div className="font-medium text-ink">
-                    {study.location.altitudeM ? `${study.location.altitudeM} m` : '—'}
+                    {study.location.altitudeM != null ? `${study.location.altitudeM} m` : '—'}
                   </div>
                 </div>
               </div>
@@ -226,7 +226,7 @@ export function LocationStep() {
           <div className="grid grid-cols-2 gap-3 p-6 sm:grid-cols-3">
             <MiniStat label="Fuseau horaire" value={study.location.timezone ?? '—'} />
             <MiniStat label="Commune" value={study.location.city ?? '—'} />
-            <MiniStat label="Altitude estimée" value={study.location.altitudeM ? `${study.location.altitudeM} m` : '—'} />
+            <MiniStat label="Altitude estimée" value={study.location.altitudeM != null ? `${study.location.altitudeM} m` : '—'} />
             <MiniStat label="Source climatique" value="Open-Meteo (géocodage + altitude)" />
           </div>
           <div className="flex flex-col gap-3 border-t border-border p-6">
@@ -235,7 +235,7 @@ export function LocationStep() {
               l'étape de calcul à partir de ces coordonnées.
             </p>
             <div className="flex gap-3">
-              <Button onClick={confirm} disabled={!study.location.latitude}>
+              <Button onClick={confirm} disabled={study.location.latitude == null}>
                 Confirmer
               </Button>
               <Button variant="secondary" onClick={() => setAddress('')}>
@@ -246,7 +246,7 @@ export function LocationStep() {
         </Card>
       </div>
 
-      <WizardFooter nextSteps={defaultNextSteps} onContinue={confirm} continueDisabled={!study.location.latitude} />
+      <WizardFooter nextSteps={defaultNextSteps} onContinue={confirm} continueDisabled={study.location.latitude == null} />
     </div>
   );
 }

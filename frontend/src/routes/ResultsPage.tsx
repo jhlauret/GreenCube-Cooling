@@ -1,19 +1,28 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
+import { Link, Navigate, useLocation, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/layout/AppHeader';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { StatTile } from '../components/ui/StatTile';
 import { useStudyStore } from '../store/studyStore';
-import { syncStudyToBackend } from '../sync/syncStudy';
-import { calculate, getStudyResults, type BackendResult } from '../api/study';
+import { getResult, getStudyResults, type BackendResult } from '../api/study';
 import { ApiError } from '../api/client';
 
+/**
+ * Never triggers a calculation itself — POST /calculations is only ever
+ * called once, from ReviewStep's button click, with an Idempotency-Key.
+ * This page just fetches and displays the result it was navigated to (or
+ * the study's latest result on a direct visit/refresh), so remounting or
+ * revisiting this route can't spawn duplicate solver runs or history
+ * pollution (audit P1-06).
+ */
 export function ResultsPage() {
   const { studyId } = useParams<{ studyId: string }>();
+  const location = useLocation();
   const study = useStudyStore((state) => (studyId ? state.studies[studyId] : undefined));
-  const updateStudy = useStudyStore((state) => state.updateStudy);
+
+  const navigationResultId = (location.state as { resultId?: number } | null)?.resultId ?? null;
 
   const [result, setResult] = useState<BackendResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -26,15 +35,28 @@ export function ResultsPage() {
       setLoading(true);
       setError(null);
       try {
-        const backendId = await syncStudyToBackend(study!, (id) => updateStudy(study!.id, { backendId: id }));
-        const computed = await calculate(backendId);
-        if (!cancelled) setResult(computed);
+        if (navigationResultId) {
+          const computed = await getResult(navigationResultId);
+          if (!cancelled) setResult(computed);
+          return;
+        }
+        if (study!.backendId) {
+          const results = await getStudyResults(study!.backendId);
+          if (!cancelled) setResult(results[0] ?? null);
+          if (!cancelled && results.length === 0) {
+            setError("Aucun résultat pour cette étude. Lancez un calcul depuis l'étape de vérification.");
+          }
+          return;
+        }
+        if (!cancelled) {
+          setError("Aucun résultat pour cette étude. Lancez un calcul depuis l'étape de vérification.");
+        }
       } catch (err) {
         if (!cancelled) {
           setError(
             err instanceof ApiError
               ? err.message
-              : "Le calcul n'a pas pu être exécuté : vérifiez la localisation, le modèle et l'orientation.",
+              : "Impossible de récupérer le résultat du calcul.",
           );
         }
       } finally {
@@ -46,12 +68,15 @@ export function ResultsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [study?.id]);
+  }, [study?.id, navigationResultId]);
 
   async function refreshFromLatest() {
     if (!study?.backendId) return;
     const results = await getStudyResults(study.backendId);
-    if (results.length > 0) setResult(results[0]);
+    if (results.length > 0) {
+      setResult(results[0]);
+      setError(null);
+    }
   }
 
   if (!studyId || !study) {
@@ -60,7 +85,7 @@ export function ResultsPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-surface-muted">
-      <AppHeader />
+      <AppHeader syncState={study.backendId ? 'synced' : 'local'} />
       <main className="mx-auto w-full max-w-7xl flex-1 px-8 py-6">
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-xl font-semibold text-ink">Résultats — {study.name}</h1>

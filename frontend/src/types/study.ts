@@ -25,7 +25,7 @@ export const WIZARD_STEPS: WizardStepMeta[] = [
 ];
 
 export type EnvironmentType =
-  | 'urban_dense'
+  | 'dense_urban'
   | 'suburban'
   | 'rural'
   | 'mountain'

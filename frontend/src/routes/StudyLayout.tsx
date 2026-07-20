@@ -17,7 +17,7 @@ export function StudyLayout() {
 
   return (
     <div className="flex min-h-screen flex-col bg-surface-muted">
-      <AppHeader />
+      <AppHeader syncState={study.backendId ? 'synced' : 'local'} />
       <Stepper studyId={studyId} currentStep={currentStep} completedSteps={study.completedSteps} />
       <main className="mx-auto w-full max-w-7xl flex-1 px-8 py-6">
         <Outlet context={{ study }} />

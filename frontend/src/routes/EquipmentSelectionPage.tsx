@@ -80,7 +80,7 @@ export function EquipmentSelectionPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-surface-muted">
-      <AppHeader />
+      <AppHeader syncState={study.backendId ? 'synced' : 'local'} />
       <main className="mx-auto w-full max-w-7xl flex-1 px-8 py-6">
         <div className="mb-4 flex items-center justify-between">
           <h1 className="text-xl font-semibold text-ink">Sélection d'équipement — {study.name}</h1>

@@ -34,11 +34,16 @@ export interface BackendResult {
 }
 
 export interface ValidationIssue {
+  id: string;
   code: string;
+  title: string;
   message: string;
-  severity: 'blocking' | 'warning' | 'info';
+  // Matches cooling_study.py's get_validation()/add_issue() exactly:
+  // 'error'|'warning'|'info', not 'blocking' — `blocking` is its own
+  // separate boolean field (audit P2-08: these two were out of sync).
+  severity: 'error' | 'warning' | 'info';
   blocking: boolean;
-  section: string | null;
+  section_code: string | null;
   field_path: string | null;
 }
 
@@ -46,24 +51,95 @@ export interface ValidationReport {
   issues: ValidationIssue[];
   blocking_count: number;
   warning_count: number;
+  info_count: number;
+  ready: boolean;
   provenance_summary: Record<string, number>;
+  /** Completeness/provenance quality, computable before any solver run. */
+  completeness_score: number;
+  /** Solver output — stays 0 until a calculation has actually run. */
   confidence_score: number;
+}
+
+export interface BackendStudySummary {
+  id: number;
+  reference: string | null;
+  name: string;
+  state: string;
+  location: { address: string | null; city: string | null };
+  confidence_score: number;
+  active_result_id: number | null;
+  updated_at: string | null;
+}
+
+export function listStudies() {
+  return apiFetch<BackendStudySummary[]>('/studies');
 }
 
 export function createStudy(name: string) {
   return apiFetch<{ id: number }>('/studies', { method: 'POST', body: { name } });
 }
 
+export function getStudy(id: number) {
+  return apiFetch<BackendStudySummary & Record<string, unknown>>(`/studies/${id}`);
+}
+
 export function patchStudy(id: number, vals: Record<string, unknown>) {
   return apiFetch(`/studies/${id}`, { method: 'PATCH', body: vals });
+}
+
+export interface BackendFacade {
+  id: number;
+  orientation: string;
+  gross_area_m2: number;
+  glazing_area_m2: number;
+}
+
+export interface BackendThermalSpecification {
+  id: number;
+  length_m: number;
+  width_m: number;
+  height_m: number;
+  wall_u_value: number;
+  airtightness_n50: number;
+  facades: BackendFacade[];
+}
+
+export function getThermalSpecification(id: number) {
+  return apiFetch<BackendThermalSpecification | null>(`/studies/${id}/thermal-specification`);
 }
 
 export function putThermalSpecification(id: number, vals: Record<string, unknown>) {
   return apiFetch(`/studies/${id}/thermal-specification`, { method: 'PUT', body: vals });
 }
 
+export interface BackendOccupancyProfile {
+  id: number;
+  usage_type: string;
+  usual_occupants: number;
+  maximum_occupants: number;
+  activity_level: string;
+  usage_days: string;
+  start_hour: number;
+  end_hour: number;
+  used_at_night: boolean;
+}
+
+export function getOccupancyProfile(id: number) {
+  return apiFetch<BackendOccupancyProfile | null>(`/studies/${id}/occupancy-profile`);
+}
+
 export function putOccupancyProfile(id: number, vals: Record<string, unknown>) {
   return apiFetch(`/studies/${id}/occupancy-profile`, { method: 'PUT', body: vals });
+}
+
+export interface BackendVentilationProfile {
+  id: number;
+  ventilation_type: string;
+  airflow_m3h: number;
+}
+
+export function getVentilationProfile(id: number) {
+  return apiFetch<BackendVentilationProfile | null>(`/studies/${id}/ventilation-profile`);
 }
 
 export function putVentilationProfile(id: number, vals: Record<string, unknown>) {
@@ -108,8 +184,34 @@ export function confirmAssumptions(id: number) {
   return apiFetch<{ confirmed_count: number }>(`/studies/${id}/assumptions/confirm`, { method: 'POST' });
 }
 
-export function calculate(id: number) {
-  return apiFetch<BackendResult>(`/studies/${id}/calculations`, { method: 'POST' });
+export interface CalculationJob {
+  job_id: number;
+  status: string;
+  result_id: number;
+  engine: string;
+  engine_version: string | null;
+  request_id: string;
+}
+
+/**
+ * Triggers a calculation. Odoo runs MERCURE synchronously today, but the
+ * response is a job envelope (not a result) so the contract already
+ * supports a future asynchronous EnergyPlus job without another breaking
+ * change. Callers must follow up with getResult(job.result_id).
+ */
+export function calculate(id: number, idempotencyKey?: string) {
+  return apiFetch<CalculationJob>(`/studies/${id}/calculations`, {
+    method: 'POST',
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+  });
+}
+
+export function getCalculationJob(jobId: number) {
+  return apiFetch<CalculationJob>(`/calculations/${jobId}`);
+}
+
+export function getResult(resultId: number) {
+  return apiFetch<BackendResult>(`/results/${resultId}`);
 }
 
 export function getStudyResults(id: number) {

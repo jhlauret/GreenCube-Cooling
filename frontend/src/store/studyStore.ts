@@ -8,6 +8,7 @@ interface StudyStoreState {
   updateStudy: (id: string, patch: Partial<StudyDraft>) => void;
   markStepComplete: (id: string, step: WizardStepId) => void;
   getStudy: (id: string) => StudyDraft | undefined;
+  findByBackendId: (backendId: number) => StudyDraft | undefined;
 }
 
 export const useStudyStore = create<StudyStoreState>()(
@@ -43,6 +44,7 @@ export const useStudyStore = create<StudyStoreState>()(
         });
       },
       getStudy: (id) => get().studies[id],
+      findByBackendId: (backendId) => Object.values(get().studies).find((s) => s.backendId === backendId),
     }),
     { name: 'gc-cooling-studies' },
   ),

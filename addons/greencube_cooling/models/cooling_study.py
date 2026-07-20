@@ -183,7 +183,11 @@ class GreencubeCoolingStudy(models.Model):
         missing = []
         if not self.thermal_specification_id:
             missing.append("thermal_specification")
-        if not self.latitude or not self.longitude:
+        # climate_confirmed, not raw lat/lon truthiness: Odoo Float fields
+        # can't distinguish "never set" from "set to exactly 0.0" (e.g. the
+        # equator or the Greenwich meridian), so presence must be tracked
+        # via the explicit confirmation flag instead (audit GC-COOLING-03).
+        if not self.climate_confirmed:
             missing.append("location")
         if not self.occupancy_profile_ids:
             missing.append("occupancy")
@@ -221,10 +225,10 @@ class GreencubeCoolingStudy(models.Model):
                 "MODEL_MISSING", "error", "model", "Modèle manquant",
                 "Aucune spécification thermique GreenCube n'est associée à cette étude.", blocking=True,
             )
-        if not self.latitude or not self.longitude:
+        if not self.climate_confirmed:
             add_issue(
                 "LOCATION_MISSING", "error", "location", "Localisation manquante",
-                "La latitude et la longitude doivent être renseignées.", blocking=True,
+                "La localisation doit être recherchée et confirmée.", blocking=True,
             )
         if not self.occupancy_profile_ids:
             add_issue(
@@ -302,8 +306,30 @@ class GreencubeCoolingStudy(models.Model):
             "info_count": info_count,
             "ready": blocking_count == 0,
             "provenance_summary": provenance_summary,
+            # Data completeness/provenance quality, computable before any
+            # solver run — deliberately distinct from `confidence_score`,
+            # which is a solver output that stays 0 until action_calculate()
+            # runs (audit P1-05: Review used to show a permanent 0% before
+            # the first calculation because it read the solver field).
+            "completeness_score": self._compute_completeness_score(blocking_count, warning_count, provenance_summary),
             "confidence_score": self.confidence_score,
         }
+
+    def _compute_completeness_score(self, blocking_count, warning_count, provenance_summary):
+        """1.0 only when every required section is present (no blocking
+        issues) and every sub-line uses a confirmed/measured/catalog
+        provenance. Each remaining warning and each unconfirmed line pulls
+        the score down proportionally, so a complete-but-unconfirmed study
+        reads meaningfully above 0 without pretending to be solver-grade."""
+        if blocking_count > 0:
+            return 0.0
+        total_lines = sum(provenance_summary.values())
+        confirmed_lines = sum(
+            count for provenance, count in provenance_summary.items() if provenance not in NON_CONFIRMED_PROVENANCES
+        )
+        provenance_ratio = (confirmed_lines / total_lines) if total_lines else 1.0
+        score = 0.6 + 0.4 * provenance_ratio - 0.03 * warning_count
+        return max(0.0, min(1.0, round(score, 3)))
 
     def action_confirm_assumptions(self):
         """Bulk-confirm every non-measured/non-catalog sub-line (GC-COOLING-13
@@ -413,7 +439,7 @@ class GreencubeCoolingStudy(models.Model):
         self.ensure_one()
         environment_type = self.environment_type
         scenarios = None
-        if self.latitude and self.longitude:
+        if self.climate_confirmed:
             try:
                 fetched = self.env["greencube.cooling.climate.dataset"].get_or_fetch_scenarios(
                     self.latitude, self.longitude, environment_type

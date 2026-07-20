@@ -198,6 +198,66 @@ Changements :
   Lyon avec spécification, façades, occupation, équipements, ventilation), chargée uniquement avec
   `--with-demo` (clé `demo` du manifeste, pas `data`).
 
+## Lot de stabilisation (2026-07-20) : suite à l'audit fonctionnel
+
+`Audit_fonctionnel_GreenCube_Cooling_18-07-2026.md` (score 40/100, verdict NO-GO) listait 6 blocages P0.
+Ce lot corrige ceux qui sont du ressort du code de ce dépôt :
+
+- **P0-01 (build cassé)** : `client.ts` n'autorisait pas `PUT` alors que `study.ts` en émet quatre ;
+  `syncStudy.ts` déclarait `wallAreaM2` sans l'utiliser. `npm run build` passe à nouveau.
+- **P0-02 (contrat de calcul incohérent)** : `POST /calculations` a toujours renvoyé une enveloppe de job
+  (`{job_id, result_id, ...}`), mais le frontend attendait un `BackendResult` complet directement. Le
+  frontend suit maintenant le parcours job → résultat (`calculate()` renvoie le job, `getResult(result_id)`
+  récupère le résultat). Ce découplage est volontaire : il prépare un futur moteur EnergyPlus asynchrone
+  sans nouvelle rupture de contrat.
+- **P0-03 (rôle User non fonctionnel)** : `greencube.thermal.specification`/`.facade` étaient en lecture
+  seule pour le groupe User. Un `ir.rule` dédié (`rule_thermal_specification_user_owns_private` /
+  `rule_thermal_facade_user_owns_private`) autorise désormais l'écriture/création/suppression uniquement
+  sur les spécifications **privées** (`standard_model=False`) rattachées à une étude dont l'utilisateur est
+  propriétaire ; les modèles de catalogue (`standard_model=True`) restent manager-only en écriture. Le
+  contrôleur force un fork (création d'une copie privée) dès qu'une étude référence un modèle standard,
+  au lieu d'essayer de l'éditer en place.
+- **P0-05 (IDOR sur les sous-modèles)** : aucun `ir.rule` n'existait pour les profils d'occupation, les
+  apports internes, la ventilation, les protections solaires, les résultats et leurs composants — un
+  utilisateur du groupe User pouvait lire/écrire n'importe quelle ligne d'un autre utilisateur en devinant
+  son id. Des règles calquées sur celles de l'étude (`study_id.user_id` pour les users,
+  `study_id.company_id` en filtre global, visibilité élargie pour les techniciens) ont été ajoutées pour
+  chacun de ces modèles. Toutes les routes du contrôleur sont maintenant décorées avec `@_guarded`, qui
+  transforme les `AccessError`/`MissingError` ORM en enveloppe JSON standard (`COOLING_ACCESS_DENIED` /
+  `COOLING_NOT_FOUND`) au lieu de laisser Odoo répondre avec sa page d'erreur par défaut.
+- **P0-04 (Odoo pas source de vérité)** : `StudiesListPage` interroge maintenant `GET /studies` et affiche
+  aussi les études qui existent côté Odoo sans brouillon local (créées ailleurs, ou après un vidage du
+  `localStorage`), avec une action d'import (`loadStudyFromBackend`, reverse-mapping best-effort des
+  endpoints GET thermal-specification/occupancy-profile/ventilation-profile/equipment-loads déjà
+  existants) qui matérialise un brouillon local éditable dans l'assistant. Le bandeau d'en-tête
+  n'affiche plus « Enregistré » de façon statique : `AppHeader` prend un `syncState` explicite
+  (`local`/`synced`) que chaque page renseigne selon `study.backendId`.
+  **Limite assumée** : le wizard continue d'utiliser un id local (uuid) comme clé de route/état — ce lot
+  ne re-clé pas l'intégralité des routes sur l'id Odoo, ce qui serait un chantier plus large et plus
+  risqué à valider sans navigateur réel dans cet environnement.
+- **P0-06 (CORS/CSRF non finalisé)** : `vite.config.ts` proxie désormais `/api/v1/greencube/cooling` vers
+  Odoo (`VITE_ODOO_ORIGIN`, défaut `http://localhost:8069`) pendant `npm run dev`, pour que le navigateur
+  ne voie qu'une seule origine et que le cookie de session Odoo reste same-origin. **Ceci ne couvre que le
+  développement local** : en production, il faut reproduire ce même-origine avec un reverse proxy
+  (nginx/traefik) devant Odoo et les assets du frontend — aucune infrastructure de ce type n'est livrée
+  dans ce dépôt. Les routes mutatives restent en `csrf=False` avec auth par cookie de session ; tant
+  qu'elles ne sont accessibles que same-origin via ce proxy, le risque CSRF classique (formulaire tiers)
+  est limité, mais ce n'est pas une protection CSRF explicite (double-submit token, `SameSite=Strict`,
+  etc.) — à faire avant toute exposition multi-origine réelle.
+- Corrections ponctuelles associées : `dense_urban`/`urban_dense` (le frontend utilisait la mauvaise
+  valeur d'énumération, P1-04) ; le calcul n'est plus déclenché automatiquement à chaque montage de
+  `ResultsPage` (P1-06) — il l'est une seule fois depuis le bouton de `ReviewStep`, avec une
+  `Idempotency-Key` générée côté client et transmise à `POST /calculations` ; `syncStudyToBackend` vide
+  désormais les protections solaires côté Odoo quand elles sont retirées côté UI (P2-06, comportement
+  auparavant destructif dans un seul sens).
+
+**Non traité dans ce lot** (P1/P2 de l'audit, hors urgence de recette) : modèles GreenCube toujours
+décoratifs (P1-01), orientation principale sans effet sur la géométrie (P1-02), protections solaires
+réduites à un type générique (P1-03), score de fiabilité pré-calcul (P1-05), cycle révision/validation
+absent du frontend (P1-07), immutabilité de la sélection d'équipement non garantie en écriture (P1-08),
+EnergyPlus toujours non implémenté/non asynchrone (P1-09), et l'ensemble des écarts P2 (validation
+Zod/RHF, pagination, export, accessibilité, tests Playwright/HTTP en CI...).
+
 ## Ce qui reste en suspens
 
 Le runtime Odoo est maintenant disponible et a été utilisé pour toutes les vérifications ci-dessus.

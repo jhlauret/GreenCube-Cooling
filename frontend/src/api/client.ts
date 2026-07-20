@@ -34,9 +34,10 @@ export class ApiError extends Error {
 }
 
 export interface ApiRequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   signal?: AbortSignal;
+  headers?: Record<string, string>;
 }
 
 /**
@@ -49,7 +50,10 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
   const response = await fetch(`${API_BASE_URL}${API_PREFIX}${path}`, {
     method: options.method ?? 'GET',
     credentials: 'include',
-    headers: options.body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers: {
+      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : undefined),
+      ...options.headers,
+    },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     signal: options.signal,
   });

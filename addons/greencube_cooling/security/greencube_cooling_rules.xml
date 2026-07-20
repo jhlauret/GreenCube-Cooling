@@ -29,10 +29,179 @@
     </record>
 
     <record id="rule_thermal_specification_company" model="ir.rule">
-        <field name="name">GreenCube Thermal Specification: multi-company</field>
+        <field name="name">GreenCube Thermal Specification: multi-company read</field>
         <field name="model_id" ref="model_greencube_thermal_specification"/>
         <field name="domain_force">[('company_id', 'in', company_ids)]</field>
         <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+        <field name="perm_read" eval="True"/>
+        <field name="perm_write" eval="False"/>
+        <field name="perm_create" eval="False"/>
+        <field name="perm_unlink" eval="False"/>
+    </record>
+
+    <!-- A standard User may only write/create/unlink a private (non
+         catalog) specification linked to one of their own studies. Catalog
+         entries (standard_model=True) stay manager-only, so the wizard's
+         PUT /thermal-specification must fork a private copy instead of
+         editing a shared model in place. -->
+    <record id="rule_thermal_specification_user_owns_private" model="ir.rule">
+        <field name="name">GreenCube Thermal Specification: user edits own private specs</field>
+        <field name="model_id" ref="model_greencube_thermal_specification"/>
+        <field name="domain_force">
+            ['&amp;', ('standard_model', '=', False), '|', ('study_ids', '=', False), ('study_ids.user_id', '=', user.id)]
+        </field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+        <field name="perm_read" eval="False"/>
+        <field name="perm_write" eval="True"/>
+        <field name="perm_create" eval="True"/>
+        <field name="perm_unlink" eval="True"/>
+    </record>
+
+    <record id="rule_thermal_facade_company" model="ir.rule">
+        <field name="name">GreenCube Thermal Facade: multi-company read</field>
+        <field name="model_id" ref="model_greencube_thermal_facade"/>
+        <field name="domain_force">[('thermal_specification_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+        <field name="perm_read" eval="True"/>
+        <field name="perm_write" eval="False"/>
+        <field name="perm_create" eval="False"/>
+        <field name="perm_unlink" eval="False"/>
+    </record>
+
+    <record id="rule_thermal_facade_user_owns_private" model="ir.rule">
+        <field name="name">GreenCube Thermal Facade: user edits facades of own private specs</field>
+        <field name="model_id" ref="model_greencube_thermal_facade"/>
+        <field name="domain_force">
+            ['&amp;', ('thermal_specification_id.standard_model', '=', False),
+             '|', ('thermal_specification_id.study_ids', '=', False),
+                  ('thermal_specification_id.study_ids.user_id', '=', user.id)]
+        </field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+        <field name="perm_read" eval="False"/>
+        <field name="perm_write" eval="True"/>
+        <field name="perm_create" eval="True"/>
+        <field name="perm_unlink" eval="True"/>
+    </record>
+
+    <!-- Sub-resources of a study (occupancy, equipment, ventilation,
+         shading) and its results carry no owner of their own: ownership is
+         always inherited from study_id.user_id / study_id.company_id, and
+         technicians see every study in their company (mirrors the study
+         rules above). Without these, any authenticated user in the User
+         group could read or edit another user's sub-resources by guessing
+         a numeric id (audit P0-05). -->
+    <record id="rule_occupancy_profile_company" model="ir.rule">
+        <field name="name">GreenCube Occupancy Profile: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_occupancy_profile"/>
+        <field name="domain_force">[('study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_occupancy_profile_own_user" model="ir.rule">
+        <field name="name">GreenCube Occupancy Profile: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_occupancy_profile"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_occupancy_profile_technician_company" model="ir.rule">
+        <field name="name">GreenCube Occupancy Profile: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_occupancy_profile"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_equipment_load_company" model="ir.rule">
+        <field name="name">GreenCube Equipment Load: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_equipment_load"/>
+        <field name="domain_force">[('study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_equipment_load_own_user" model="ir.rule">
+        <field name="name">GreenCube Equipment Load: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_equipment_load"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_equipment_load_technician_company" model="ir.rule">
+        <field name="name">GreenCube Equipment Load: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_equipment_load"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_ventilation_profile_company" model="ir.rule">
+        <field name="name">GreenCube Ventilation Profile: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_ventilation_profile"/>
+        <field name="domain_force">[('study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_ventilation_profile_own_user" model="ir.rule">
+        <field name="name">GreenCube Ventilation Profile: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_ventilation_profile"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_ventilation_profile_technician_company" model="ir.rule">
+        <field name="name">GreenCube Ventilation Profile: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_ventilation_profile"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_shading_company" model="ir.rule">
+        <field name="name">GreenCube Shading: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_shading"/>
+        <field name="domain_force">[('study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_shading_own_user" model="ir.rule">
+        <field name="name">GreenCube Shading: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_shading"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_shading_technician_company" model="ir.rule">
+        <field name="name">GreenCube Shading: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_shading"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_cooling_result_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Result: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_result"/>
+        <field name="domain_force">[('study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_cooling_result_own_user" model="ir.rule">
+        <field name="name">GreenCube Cooling Result: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_result"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_cooling_result_technician_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Result: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_result"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_cooling_result_component_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Result Component: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_result_component"/>
+        <field name="domain_force">[('result_id.study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_cooling_result_component_own_user" model="ir.rule">
+        <field name="name">GreenCube Cooling Result Component: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_result_component"/>
+        <field name="domain_force">[('result_id.study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_cooling_result_component_technician_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Result Component: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_result_component"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
     </record>
 
     <record id="rule_solver_version_company" model="ir.rule">
