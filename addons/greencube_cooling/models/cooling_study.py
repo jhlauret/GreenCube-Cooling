@@ -521,7 +521,17 @@ class GreencubeCoolingStudy(models.Model):
         study's greencube.cooling.climate.scenario child lines, so the
         provenance (real historical data vs. fallback heuristic) and the
         source values are visible/auditable instead of only living inside
-        the transient MERCURE payload."""
+        the transient MERCURE payload.
+
+        Uses sudo(): this is an internal derived-data cache written as a
+        side effect of action_calculate(), never a direct user-facing CRUD
+        action (no API route exposes climate.scenario writes) — the ACL
+        deliberately keeps create/write technician-only for direct access,
+        but a plain "User" must still be able to run their own calculation
+        (real bug found by test_http_api.py's first genuine execution:
+        without sudo() here, every calculation by a non-technician user
+        failed with an AccessError on this internal write).
+        """
         self.ensure_one()
         existing_by_code = {rec.scenario_type: rec for rec in self.climate_scenario_ids}
         for s in scenarios:
@@ -537,9 +547,9 @@ class GreencubeCoolingStudy(models.Model):
             }
             record = existing_by_code.get(s["code"])
             if record:
-                record.write(vals)
+                record.sudo().write(vals)
             else:
-                self.env["greencube.cooling.climate.scenario"].create(vals)
+                self.env["greencube.cooling.climate.scenario"].sudo().create(vals)
 
     def _build_mercure_input(self):
         """Build the immutable MERCURE payload from the current study state.

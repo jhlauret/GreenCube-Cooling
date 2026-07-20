@@ -58,7 +58,12 @@ class TestCoolingHttpApi(HttpCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        # res.users.create() does not implicitly grant base.group_user (the
+        # "Internal User" group web signup normally adds) — without it, the
+        # created user can't even read ir.sequence to obtain the study
+        # reference on create(), regardless of greencube-specific groups.
         group_user = cls.env.ref("greencube_cooling.group_greencube_cooling_user")
+        group_internal_user = cls.env.ref("base.group_user")
         cls.company_a = cls.env["res.company"].create({"name": "HTTP Test Company A"})
         cls.company_b = cls.env["res.company"].create({"name": "HTTP Test Company B"})
 
@@ -70,7 +75,7 @@ class TestCoolingHttpApi(HttpCase):
                 "password": "http-test-pwd-a",
                 "company_id": cls.company_a.id,
                 "company_ids": [(6, 0, [cls.company_a.id])],
-                "groups_id": [(6, 0, [group_user.id])],
+                "groups_id": [(6, 0, [group_internal_user.id, group_user.id])],
             }
         )
         cls.user_b = cls.env["res.users"].create(
@@ -81,8 +86,22 @@ class TestCoolingHttpApi(HttpCase):
                 "password": "http-test-pwd-b",
                 "company_id": cls.company_b.id,
                 "company_ids": [(6, 0, [cls.company_b.id])],
-                "groups_id": [(6, 0, [group_user.id])],
+                "groups_id": [(6, 0, [group_internal_user.id, group_user.id])],
             }
+        )
+
+        # greencube.cooling.solver.version is company-scoped (required
+        # company_id + a strict company_id-in-company_ids rule, same
+        # convention as greencube.thermal.specification) — the demo solver
+        # version installed with the module only belongs to the default
+        # company, so action_calculate() would otherwise fail for every
+        # freshly-created company with SOLVER_VERSION_MISSING regardless of
+        # how complete the study itself is.
+        cls.env["greencube.cooling.solver.version"].sudo().create(
+            {"name": "MERCURE test (A)", "code": "MERCURE", "version": "1.0.0-test", "state": "active", "company_id": cls.company_a.id}
+        )
+        cls.env["greencube.cooling.solver.version"].sudo().create(
+            {"name": "MERCURE test (B)", "code": "MERCURE", "version": "1.0.0-test", "state": "active", "company_id": cls.company_b.id}
         )
 
     def _post(self, path, payload, headers=None):
@@ -111,7 +130,14 @@ class TestCoolingHttpApi(HttpCase):
 
     def test_unauthenticated_request_does_not_return_study_data(self):
         # No self.authenticate() call: the opener carries no session cookie.
-        response = self._get("/studies")
+        # allow_redirects=False: auth="user" routes 303-redirect anonymous
+        # HTTP requests to Odoo's HTML login page, which itself returns 200
+        # — following the redirect would make this assertion pass even when
+        # the API correctly refused the request, by checking the login
+        # page's status instead of the API response's own status.
+        response = self.opener.request(
+            "GET", self.base_url() + self.BASE + "/studies", allow_redirects=False, timeout=20
+        )
         self.assertNotEqual(response.status_code, 200)
 
     def test_full_wizard_flow_as_standard_user(self):

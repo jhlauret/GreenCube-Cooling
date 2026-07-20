@@ -422,8 +422,9 @@ fonctionnel avant une installation réelle.
   (`VITE_ODOO_ORIGIN`) et une session authentifiée — aucun des deux n'est disponible dans cet
   environnement. `npx playwright test --list` confirme que la config et le fichier sont au moins
   syntaxiquement valides ; rien de plus n'a pu être vérifié.
-- **Concurrence/idempotence/deux sociétés — étendu dans `tests/test_http_api.py`** (toujours non exécuté,
-  même réserve que le reste de ce fichier) : `test_two_companies_full_isolation_on_direct_ids` (étude,
+- **Concurrence/idempotence/deux sociétés — étendu dans `tests/test_http_api.py`** (~~toujours non
+  exécuté~~ — exécuté réellement depuis, voir « Lot vérification réelle Odoo » ci-dessous) :
+  `test_two_companies_full_isolation_on_direct_ids` (étude,
   résultat et liste jamais visibles depuis l'autre société) et
   `test_idempotency_key_survives_repeated_retries` (3 requêtes identiques → un seul job/résultat). **Limite
   assumée :** ce sont des vérifications séquentielles dans un seul thread de test, pas une vraie
@@ -447,14 +448,57 @@ fonctionnel avant une installation réelle.
   (`Audit_fonctionnel_GreenCube_Cooling_18-07-2026.md`, à la racine du dépôt — c'est l'état initial
   documenté avant tous les lots de correction de cette session, pas la peine de le dupliquer). La matrice
   de traçabilité, elle, n'existait pas : ajoutée dans `docs/cooling_v2_traceability_matrix.md`.
-  Migrations de schéma : aucune n'a été nécessaire pour l'ensemble des lots de cette session (uniquement
-  des champs additifs nullable et de nouveaux modèles) — voir `docs/cooling_security_matrix.md` pour le
-  raisonnement détaillé à chaque ajout de champ. Le reste de GC-COOLING-17 (Docker/compose, sauvegarde/
-  restauration, rollback, healthchecks, logs structurés, décision GO/NO-GO formelle) n'a pas été traité.
+  ~~Migrations de schéma : aucune n'a été nécessaire pour l'ensemble des lots de cette session~~ — plus
+  vrai depuis : `migrations/18.0.2.0.0/` et `migrations/18.0.3.0.0/` existent désormais (voir « Lot
+  vérification réelle Odoo » ci-dessous et `migrations/README.md` pour la politique). Le reste de
+  GC-COOLING-17 (Docker/compose, sauvegarde/restauration, rollback, healthchecks, logs structurés,
+  décision GO/NO-GO formelle) n'a pas été traité.
 - **Découverte, non traitée** : `@tanstack/react-query`, `zod`, `react-hook-form` et
   `@hookform/resolvers` sont présents dans `package.json` depuis le début de ce dépôt mais ne sont
   importés nulle part dans `src/`. Soit un reliquat d'un scaffold jamais branché, soit une intention non
   réalisée — à clarifier avant de les utiliser ou de les retirer.
+
+## Lot vérification réelle Odoo — GC-COOLING-01/02/13/15/16 (2026-07-20, suite)
+
+Toutes les sessions précédentes de ce fichier avaient développé/corrigé du code Odoo sans jamais
+disposer d'une instance Odoo installée dans leur environnement d'exécution — chaque section ci-dessus le
+documente honnêtement ("jamais exécuté", "à revalider"). Cette fois, un environnement avec Odoo 18 déjà
+installé (`/opt/odoo/odoo18`, PostgreSQL 17) était disponible, et a été utilisé pour rejouer réellement
+l'installation, la suite de tests complète, les deux scripts de migration, et un aller-retour HTTP complet
+du wizard plus les deux nouvelles routes worker EnergyPlus — sur une base de test dédiée
+(`greencube_test_20260720`), jamais une base existante, supprimée après coup.
+
+**4 bugs réels trouvés et corrigés** (pas seulement des échecs de test) :
+
+1. **`tests/__init__.py` n'importait jamais `test_http_api.py` ni `test_honeybee_translator.py`** — ces
+   deux suites étaient invisibles au test-runner Odoo depuis le début, silencieusement, sans erreur ni
+   avertissement. Le "39 tests, 0 échec" du lot GC-COOLING-13 ci-dessus était donc réel mais incomplet :
+   `test_http_api.py` (10 tests) et `test_honeybee_translator.py` (7 tests, déjà vérifié en standalone
+   mais jamais sous Odoo) n'y étaient pas.
+2. **Bug ACL réel** : `_sync_climate_scenario_records()` (appelée en interne par `action_calculate()`)
+   écrivait sur `greencube.cooling.climate.scenario` sans `sudo()`, alors que ce modèle est
+   volontairement technicien-only en écriture directe. Conséquence réelle : **un simple "User" ne
+   pouvait jamais terminer un calcul** via l'API. Corrigé avec `sudo()` sur cette écriture interne (aucune
+   route API n'expose ce modèle en écriture directe, donc la sécurité effective ne change pas).
+3. **Fixtures de test cassées** : études de test sans `climate_confirmed` (10 échecs
+   `test_cooling_study.py`) ; utilisateurs HTTP de test créés avec `groups_id: [(6, 0, [group])]`, qui
+   *remplace* tous les groupes au lieu d'ajouter — supprimant `base.group_user`, nécessaire ne serait-ce
+   que pour lire `ir.sequence` (5 échecs `test_http_api.py`). Corrigées.
+4. **`greencube.cooling.solver.version` est scopé par société** (même convention que
+   `greencube.thermal.specification`) : les sociétés de test HTTP n'avaient pas leur propre version de
+   solver, donc `action_calculate()` échouait avec `SOLVER_VERSION_MISSING`. Corrigé en créant une
+   version de solver par société de test.
+
+**Résultat final : 45 tests, 0 échec, 0 erreur** (`--test-tags greencube_cooling`, incluant désormais tout
+le module). Les deux scripts de migration (`18.0.2.0.0`, `18.0.3.0.0`) ont été exécutés directement contre
+des données fabriquées simulant un état pré-migration et vérifiés corrects (pas seulement `ast.parse`). Le
+flux complet du wizard (création → spécification → occupation → ventilation → validation → calcul →
+résultat) et les routes `/energyplus-jobs/claim`/`/complete` ont été exercés avec un client HTTP réel —
+y compris en lançant le vrai `energyplus_worker/worker.py --once` contre le serveur, qui a réellement
+réclamé un job, réellement tenté la simulation (échec honnête `EnergyPlusUnavailableError`, stack absent),
+et réellement rapporté le résultat. Voir `docs/cooling_v2_traceability_matrix.md` pour le détail lot par
+lot mis à jour. Environnement restauré après coup (mot de passe Postgres temporaire retiré, base de test
+supprimée) ; le service Odoo de production n'a pas été touché.
 
 ## Ce qui reste en suspens
 

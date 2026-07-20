@@ -60,6 +60,7 @@ class TestCoolingStudyLifecycle(TransactionCase):
             "latitude": 43.6,
             "longitude": 3.9,
             "environment_type": "suburban",
+            "climate_confirmed": True,
         }
         vals.update(overrides)
         return self.env["greencube.cooling.study"].create(vals)
@@ -351,6 +352,7 @@ class TestCoolingStudySecurity(TransactionCase):
                 "latitude": 43.6,
                 "longitude": 3.9,
                 "environment_type": "suburban",
+                "climate_confirmed": True,
             }
         )
         cls.study_a_by_technician = cls.env["greencube.cooling.study"].create(
@@ -362,6 +364,7 @@ class TestCoolingStudySecurity(TransactionCase):
                 "latitude": 43.6,
                 "longitude": 3.9,
                 "environment_type": "suburban",
+                "climate_confirmed": True,
             }
         )
         cls.study_b_by_user_b = cls.env["greencube.cooling.study"].create(
@@ -373,6 +376,7 @@ class TestCoolingStudySecurity(TransactionCase):
                 "latitude": 43.6,
                 "longitude": 3.9,
                 "environment_type": "suburban",
+                "climate_confirmed": True,
             }
         )
 
