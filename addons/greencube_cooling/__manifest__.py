@@ -14,7 +14,7 @@ Odoo reste la source de vérité métier ; le frontend React est une
 interface de saisie et de restitution, jamais une seconde base
 de données métier.
     """,
-    "version": "18.0.1.0.0",
+    "version": "18.0.3.0.0",
     "category": "Services/Project",
     "author": "GreenCube",
     "license": "LGPL-3",
@@ -33,7 +33,6 @@ de données métier.
         "data/commercial_capacity_data.xml",
         "data/cooling_equipment_data.xml",
         "data/thermal_specification_catalog_data.xml",
-        "data/energyplus_cron_data.xml",
         "views/cooling_study_views.xml",
         "views/thermal_specification_views.xml",
         "views/greencube_cooling_menus.xml",

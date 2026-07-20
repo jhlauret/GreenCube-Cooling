@@ -1,14 +1,6 @@
 # -*- coding: utf-8 -*-
-import json
-import logging
-
 from odoo import fields, models
 from odoo.exceptions import UserError
-
-from ..services.energyplus import EnergyPlusSimulationError, EnergyPlusUnavailableError, run_energyplus_simulation
-from ..services.mercure.serialization import mercure_input_from_dict
-
-_logger = logging.getLogger(__name__)
 
 
 class GreencubeCoolingCalculationJob(models.Model):
@@ -16,9 +8,15 @@ class GreencubeCoolingCalculationJob(models.Model):
     API's `job_id` actually refers to, instead of reusing a
     greencube.cooling.result id as a stand-in job id. MERCURE (quick_solver)
     still runs synchronously inline in action_calculate() — only its
-    tracking is now a real row here — but this is also the anchor future
-    EnergyPlus jobs attach their simulation.artifact records to once a real
-    worker (see the cron in data/energyplus_cron_data.xml) picks them up."""
+    tracking is now a real row here — but this is also the anchor EnergyPlus
+    jobs attach their simulation.artifact records to once the standalone
+    `energyplus_worker/` process (outside this Odoo process, no direct
+    PostgreSQL access) claims and completes them via the
+    /energyplus-jobs/claim and /energyplus-jobs/<id>/complete HTTP routes
+    (controllers/api.py). There used to be an in-process cron doing this
+    directly against the ORM — removed because it ran with full DB access
+    in the same process as the web/cron workers, which is exactly what
+    GC-COOLING-15's worker-isolation requirement rules out."""
 
     _name = "greencube.cooling.calculation.job"
     _description = "GreenCube Cooling Calculation Job"
@@ -46,9 +44,9 @@ class GreencubeCoolingCalculationJob(models.Model):
 
     # EnergyPlus is never executed inline by action_calculate — only the
     # (real, tested) Honeybee JSON translation is attempted there. Actual
-    # simulation execution belongs to the cron-driven worker
-    # (_cron_process_pending_energyplus_jobs), which is the only place
-    # allowed to call services.energyplus.run_energyplus_simulation. This
+    # simulation execution belongs to the standalone energyplus_worker/
+    # process, which claims/completes jobs only through the HTTP routes in
+    # controllers/api.py and never touches this database directly. This
     # field tracks that hand-off independently of the job's own
     # status/result_id, since MERCURE can complete while the EnergyPlus
     # side is still pending.
@@ -58,6 +56,7 @@ class GreencubeCoolingCalculationJob(models.Model):
             ("disabled", "Feature flag disabled"),
             ("translation_failed", "Honeybee translation failed"),
             ("queued_for_worker", "Translated, queued for worker"),
+            ("simulation_running", "Claimed by worker, running"),
             ("simulation_unavailable", "Worker ran, stack unavailable"),
             ("simulation_failed", "Worker ran, simulation failed"),
             ("simulation_completed", "Worker ran, simulation completed"),
@@ -65,6 +64,7 @@ class GreencubeCoolingCalculationJob(models.Model):
         default="not_requested",
         required=True,
     )
+    claimed_at = fields.Datetime(help="Set when a worker claims this job via POST /energyplus-jobs/claim.")
 
     artifact_ids = fields.One2many("greencube.cooling.simulation.artifact", "job_id")
 
@@ -72,12 +72,12 @@ class GreencubeCoolingCalculationJob(models.Model):
         ("idempotency_key_uniq", "unique(idempotency_key)", "An idempotency key can only be used for one job."),
     ]
 
+    _ENERGYPLUS_HANDOFF_FIELDS = {"energyplus_processing_status", "claimed_at", "error_message"}
+
     def write(self, vals):
-        if any(job.status in ("completed", "failed") for job in self) and set(vals.keys()) != {
-            "energyplus_processing_status"
-        }:
-            # The one exception is the async EnergyPlus hand-off field,
-            # which legitimately changes after the job's own (MERCURE)
+        if any(job.status in ("completed", "failed") for job in self) and not set(vals.keys()) <= self._ENERGYPLUS_HANDOFF_FIELDS:
+            # The one exception is the async EnergyPlus hand-off fields,
+            # which legitimately change after the job's own (MERCURE)
             # status is already "completed" — everything else about a
             # finished job is historical record.
             raise UserError("A finished calculation job cannot be modified, except its EnergyPlus worker status.")
@@ -88,28 +88,31 @@ class GreencubeCoolingCalculationJob(models.Model):
             raise UserError("A finished calculation job cannot be deleted.")
         return super().unlink()
 
-    def _cron_process_pending_energyplus_jobs(self, batch_size=20):
-        """Cron entry point (data/energyplus_cron_data.xml). This is the
-        ONLY place allowed to call services.energyplus.run_energyplus_simulation
-        — cooling_study.py's action_calculate() never does, precisely so the
-        actual EnergyPlus binary invocation stays out of the HTTP request/
-        web-worker path (GC-COOLING-15's worker-isolation requirement).
-        Today this always ends in "unavailable" or "not implemented" (see
-        services/energyplus.py's own docstring) since neither the
-        honeybee-energy/ladybug packages nor the EnergyPlus binary are
-        expected to be present — that is the honest, current end state of
-        the pipeline, not a placeholder pretending otherwise.
+    def _claim_next_for_worker(self):
+        """Atomically hands the oldest queued EnergyPlus job to a worker.
+        Called only from the /energyplus-jobs/claim route (controllers/api.py),
+        never from inside the Odoo request/cron path that would otherwise
+        run the simulation itself — that in-process path is exactly what
+        GC-COOLING-15 forbids. Returns None if there is nothing to claim.
         """
-        jobs = self.search([("energyplus_processing_status", "=", "queued_for_worker")], limit=batch_size)
-        for job in jobs:
-            try:
-                mercure_input = mercure_input_from_dict(json.loads(job.snapshot_id.payload_json))
-                run_energyplus_simulation(mercure_input)
-                job.write({"energyplus_processing_status": "simulation_completed"})
-            except EnergyPlusUnavailableError:
-                job.write({"energyplus_processing_status": "simulation_unavailable"})
-            except EnergyPlusSimulationError:
-                job.write({"energyplus_processing_status": "simulation_failed"})
-            except Exception:
-                _logger.exception("Unexpected error processing EnergyPlus job %s", job.id)
-                job.write({"energyplus_processing_status": "simulation_failed"})
+        job = self.search([("energyplus_processing_status", "=", "queued_for_worker")], limit=1, order="create_date asc")
+        if not job:
+            return None
+        job.write({"energyplus_processing_status": "simulation_running", "claimed_at": fields.Datetime.now()})
+        return job
+
+    def _complete_from_worker(self, status, detail=None):
+        """Records the outcome a worker reported for this job via
+        POST /energyplus-jobs/<id>/complete. `status` is one of
+        simulation_completed/simulation_unavailable/simulation_failed —
+        anything else is rejected by the controller before reaching here."""
+        self.ensure_one()
+        if self.energyplus_processing_status != "simulation_running":
+            raise UserError(
+                f"Job {self.id} is not currently claimed by a worker "
+                f"(status={self.energyplus_processing_status})."
+            )
+        vals = {"energyplus_processing_status": status}
+        if detail and status != "simulation_completed":
+            vals["error_message"] = detail
+        self.write(vals)

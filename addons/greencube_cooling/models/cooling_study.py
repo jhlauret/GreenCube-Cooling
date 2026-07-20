@@ -819,8 +819,9 @@ class GreencubeCoolingStudy(models.Model):
         cheap, pure-Python, no subprocess. Never calls
         services.energyplus.run_energyplus_simulation: that function
         touches the actual EnergyPlus binary and is reserved for the
-        cron-driven worker (GC-COOLING-15's isolation requirement), never
-        the HTTP request path. Returns (warnings, energyplus_processing_status, result_state)."""
+        standalone energyplus_worker/ process (GC-COOLING-15's isolation
+        requirement), which claims jobs over HTTP and never runs inside
+        this Odoo process. Returns (warnings, energyplus_processing_status, result_state)."""
         self.ensure_one()
         warnings = []
         if not is_energyplus_enabled():

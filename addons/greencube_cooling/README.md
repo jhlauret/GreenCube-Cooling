@@ -370,16 +370,21 @@ fonctionnel avant une installation réelle.
   demander `engine=energyplus`/`both` ne déclenche même pas la traduction Honeybee — juste un
   avertissement `ENERGYPLUS_DISABLED`. Une fois activé, la traduction (rapide, pur Python) est tentée
   dans la requête HTTP elle-même (elle ne fait rien de lourd), mais **jamais** l'exécution EnergyPlus :
-  `action_calculate()` n'appelle plus `services.energyplus.run_energyplus_simulation()` — cette fonction
-  n'est plus appelée que depuis le nouveau cron.
-- **Isolation dans un worker (GC-COOLING-15)** : `data/energyplus_cron_data.xml` définit un `ir.cron`
-  (désactivé par défaut, `_cron_process_pending_energyplus_jobs`) qui est le seul point d'entrée
-  autorisé à appeler `run_energyplus_simulation`. Les crons Odoo tournent dans le worker cron dédié,
-  séparé des workers HTTP en mode multi-workers — c'est le mécanisme d'isolation utilisé, sans ajouter
-  de dépendance de file de tâches (Celery/RQ) que ce module n'a pas par ailleurs. En pratique, cette
-  fonction lève toujours `EnergyPlusUnavailableError` aujourd'hui (aucun binaire EnergyPlus ni
-  honeybee-energy/ladybug n'est installé dans un déploiement cible de ce MVP) — le cron transitionne
-  alors `energyplus_processing_status` vers `simulation_unavailable`, sans jamais fabriquer de résultat.
+  `action_calculate()` n'appelle jamais `services.energyplus.run_energyplus_simulation()`.
+- **Isolation dans un worker séparé (GC-COOLING-15)** : ce n'est plus un cron Odoo in-process (ancienne
+  approche, remplacée — voir `migrations/18.0.3.0.0/post-migrate.py`) mais un processus autonome,
+  `energyplus_worker/` (racine du dépôt, hors de l'addon), qui ne parle à Odoo que via deux routes HTTP
+  authentifiées par secret partagé : `POST /energyplus-jobs/claim` et
+  `POST /energyplus-jobs/<id>/complete` (`controllers/api.py`). Ce worker n'ouvre jamais de connexion
+  PostgreSQL, n'importe jamais `odoo`, et ne détient aucun identifiant de base de données — voir
+  `energyplus_worker/README.md` pour le déploiement (unité systemd, utilisateur non-root). Il est
+  seul autorisé à appeler `run_energyplus_simulation`, qui reste une fonction pur Python sans
+  dépendance ORM (`services/energyplus.py`). En pratique, cette fonction lève toujours
+  `EnergyPlusUnavailableError` aujourd'hui (aucun binaire EnergyPlus ni honeybee-energy/ladybug n'est
+  installé dans un déploiement cible de ce MVP) — le worker rapporte alors
+  `energyplus_processing_status = simulation_unavailable` via `/complete`, sans jamais fabriquer de
+  résultat. Vérifié par `energyplus_worker/test_worker.py` (12 tests, exécutés réellement, pur Python) ;
+  les deux routes HTTP elles-mêmes n'ont jamais été exercées contre un vrai Odoo.
 - **Comparaison MERCURE/EnergyPlus et règle de résultat canonique : non traité.** Comme aucune simulation
   EnergyPlus ne peut aboutir dans cet environnement (ni probablement dans un déploiement MVP proche),
   écrire une logique de comparaison entre deux résultats dont l'un n'existe jamais aurait été du code

@@ -1055,3 +1055,111 @@ class GreencubeCoolingApiController(http.Controller):
             {"data": _serialize_equipment_selection(selection)},
             status=201,
         )
+
+    # ------------------------------------------------------------------
+    # EnergyPlus worker hand-off (GC-COOLING-15)
+    #
+    # These two routes are the ONLY way the standalone energyplus_worker/
+    # process talks to Odoo — it never opens a PostgreSQL connection itself.
+    # They use `auth="public"` plus a shared-secret header instead of
+    # `auth="user"`/session cookies, since a headless worker has no
+    # interactive Odoo session to authenticate with. This is a narrower
+    # trust boundary than a logged-in user: the worker key grants exactly
+    # "claim/complete EnergyPlus jobs", nothing else, and every write here
+    # goes through `sudo()` deliberately scoped to that.
+    # ------------------------------------------------------------------
+
+    def _check_worker_key(self):
+        configured = request.env["ir.config_parameter"].sudo().get_param("greencube_cooling.energyplus_worker_key")
+        if not configured:
+            # Secure-by-default: an unset key disables the endpoint rather
+            # than accepting any request. An operator must deliberately set
+            # it (env var GC_COOLING_ENERGYPLUS_WORKER_KEY -> config
+            # parameter, see energyplus_worker/README.md) before a worker
+            # can be deployed at all.
+            return _error(
+                "ENERGYPLUS_WORKER_NOT_CONFIGURED",
+                "No worker key is configured; the EnergyPlus worker endpoints are disabled.",
+                status=503,
+            )
+        provided = request.httprequest.headers.get("X-GreenCube-Worker-Key")
+        if not provided or provided != configured:
+            return _error("ENERGYPLUS_WORKER_UNAUTHORIZED", "Invalid or missing worker key.", status=401)
+        return None
+
+    @http.route(f"{BASE}/energyplus-jobs/claim", type="http", auth="public", methods=["POST"], csrf=False)
+    def claim_energyplus_job(self, **kwargs):
+        denied = self._check_worker_key()
+        if denied:
+            return denied
+
+        job = request.env["greencube.cooling.calculation.job"].sudo()._claim_next_for_worker()
+        if not job:
+            return _json_response({"data": None}, status=204)
+
+        return _json_response(
+            {
+                "data": {
+                    "job_id": job.id,
+                    "study_id": job.study_id.id,
+                    "snapshot_hash": job.snapshot_id.snapshot_hash,
+                    "payload_json": job.snapshot_id.payload_json,
+                }
+            }
+        )
+
+    @http.route(f"{BASE}/energyplus-jobs/<int:job_id>/complete", type="http", auth="public", methods=["POST"], csrf=False)
+    def complete_energyplus_job(self, job_id, **kwargs):
+        denied = self._check_worker_key()
+        if denied:
+            return denied
+
+        body = _body()
+        if body is None:
+            return _error("INVALID_JSON", "Request body must be valid JSON.", status=400)
+        status = body.get("status")
+        if status not in ("simulation_completed", "simulation_unavailable", "simulation_failed"):
+            return _error(
+                "INVALID_PAYLOAD",
+                "status must be one of simulation_completed, simulation_unavailable, simulation_failed.",
+                status=400,
+                field="status",
+            )
+
+        job = request.env["greencube.cooling.calculation.job"].sudo().browse(job_id)
+        if not job.exists():
+            return _error("COOLING_JOB_NOT_FOUND", "Calculation job not found.", status=404)
+
+        try:
+            job._complete_from_worker(status, detail=body.get("detail"))
+        except UserError as exc:
+            return _error("ENERGYPLUS_JOB_STATE_CONFLICT", str(exc), status=409)
+
+        for artifact in body.get("artifacts", []):
+            required = {"artifact_type", "checksum_sha256", "filename", "content_b64"}
+            if not required <= artifact.keys():
+                return _error(
+                    "INVALID_PAYLOAD",
+                    f"Each artifact requires {sorted(required)}.",
+                    status=400,
+                    field="artifacts",
+                )
+            attachment = request.env["ir.attachment"].sudo().create(
+                {
+                    "name": artifact["filename"],
+                    "type": "binary",
+                    "datas": artifact["content_b64"],
+                    "res_model": "greencube.cooling.calculation.job",
+                    "res_id": job.id,
+                }
+            )
+            request.env["greencube.cooling.simulation.artifact"].sudo().create(
+                {
+                    "job_id": job.id,
+                    "artifact_type": artifact["artifact_type"],
+                    "checksum_sha256": artifact["checksum_sha256"],
+                    "attachment_id": attachment.id,
+                }
+            )
+
+        return _json_response({"data": {"job_id": job.id, "energyplus_processing_status": job.energyplus_processing_status}})
