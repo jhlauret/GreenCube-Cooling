@@ -41,20 +41,37 @@ droits d'un Technician, qui a tous les droits d'un User).
 | `greencube.cooling.shading` | idem | idem | idem | idem, via `study_id` |
 | `greencube.cooling.result` | ✅ (ses études) | ❌ (immuable, voir note) | ❌ (immuable) | `study_id.user_id = user.id` (OR technicien société) ; global société |
 | `greencube.cooling.result.component` | ✅ (ses études, via résultat) | ❌ | ❌ | `result_id.study_id.user_id = user.id` (OR technicien) ; global société |
-| `greencube.cooling.calculation.snapshot` | ✅ (société) | ❌ (immuable, voir note) | ❌ | ACL société existante (non modifiée dans ce lot) |
+| `greencube.cooling.calculation.snapshot` | ✅ (ses études) | ❌ (immuable, voir note) | ❌ | `study_id.user_id = user.id` (OR technicien société) ; global société — **corrigé dans le lot simulation (2026-07-20)** : ne portait auparavant qu'une règle société, sans propriété par utilisateur (oubli du balayage P0-05 initial) |
 | `greencube.cooling.equipment.selection` | ✅ (société) | ✅ tant que `state != 'validated'` | ❌ si `state == 'validated'` | ACL société existante ; immuabilité au niveau `write()`/`unlink()` (voir note) |
+| `greencube.cooling.calculation.job` | ✅ (ses études) | ❌ (User ; write=1 en ACL mais verrouillé une fois `completed`/`failed` sauf `energyplus_processing_status`) | ❌ | `study_id.user_id = user.id` (OR technicien société) ; global société |
+| `greencube.cooling.simulation.artifact` | ✅ (ses études, via job) | ❌ (immuable) | ❌ | `job_id.study_id.user_id = user.id` (OR technicien société) ; global société |
 | `greencube.cooling.climate.scenario`, `.solver.version`, `.commercial.capacity` | ✅ (lecture seule) | ❌ (Manager uniquement) | ❌ | Référentiels : gérés par Manager, jamais par User |
 | `greencube.cooling.geo.cache`, `.climate.dataset` | ✅ | ✅ (cache technique, pas de donnée métier privée) | ❌ | Pas de portée par étude : ce sont des caches partagés par coordonnées, pas des objets appartenant à un utilisateur |
 
 **Note — immuabilité au niveau `write()`/`unlink()` (pas seulement ACL) :**
-`greencube.cooling.calculation.snapshot`, `greencube.cooling.result` et
-`greencube.cooling.equipment.selection` (état `validated`) surchargent
+`greencube.cooling.calculation.snapshot`, `greencube.cooling.result`,
+`greencube.cooling.equipment.selection` (état `validated`),
+`greencube.cooling.calculation.job` (une fois `completed`/`failed`, sauf
+son propre champ `energyplus_processing_status`) et
+`greencube.cooling.simulation.artifact` (toujours) surchargent
 `write()`/`unlink()` pour lever un `UserError` sur toute tentative de
 mutation en dehors de la seule transition d'état interne autorisée
 (`state -> superseded`). Ceci est **indépendant** des ACL/`ir.rule` : même
 un Manager avec tous les droits ACL ne peut pas modifier un résultat ou un
 snapshot déjà créé, ni un équipement validé, par ce chemin. C'est la
 garantie d'immuabilité demandée par GC-COOLING-01 pt 7/8.
+
+**Bug corrigé dans le lot simulation (2026-07-20) :** l'ACL de
+`greencube.cooling.result` et `greencube.cooling.result.component` pour le
+groupe User interdisait `create` (`perm_create=0`), alors que
+`action_calculate()` crée ces enregistrements sans `sudo()`. Un utilisateur
+standard appelant `POST /calculations` aurait donc dû échouer avec une
+`AccessError` — non détecté plus tôt car les tests `TransactionCase`
+existants appellent cette méthode via `.sudo()` (`test_plain_user_cannot_validate`),
+masquant le problème. `perm_create` est passé à `1` pour les deux ; `write`
+et `unlink` restent à `0` (protégés de toute façon par les surcharges
+Python ci-dessus, et aucun code n'écrit `state=superseded` sur un résultat
+en tant qu'utilisateur simple aujourd'hui).
 
 ## Contrôleur HTTP
 

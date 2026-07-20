@@ -58,6 +58,8 @@ export function ComfortStep() {
               <LabeledNumber
                 label="Débit d'air estimé (m³/h)"
                 value={comfort.estimatedAirflowM3h}
+                min={0}
+                max={5000}
                 onChange={(v) => patch({ estimatedAirflowM3h: v })}
               />
             </div>
@@ -143,14 +145,31 @@ export function ComfortStep() {
   );
 }
 
-function LabeledNumber({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function LabeledNumber({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 9999,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+}) {
   return (
     <label className="flex flex-col gap-1 text-xs text-ink-soft">
       {label}
       <input
         type="number"
+        min={min}
+        max={max}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => {
+          const raw = Number(e.target.value);
+          if (Number.isFinite(raw)) onChange(Math.min(max, Math.max(min, raw)));
+        }}
         className="rounded-lg border border-border px-3 py-2 text-sm text-ink outline-none focus:border-brand-500"
       />
     </label>

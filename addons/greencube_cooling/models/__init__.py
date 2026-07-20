@@ -14,3 +14,5 @@ from . import commercial_capacity
 from . import product_template
 from . import geo_cache
 from . import climate_dataset
+from . import calculation_job
+from . import simulation_artifact

@@ -40,6 +40,19 @@ class GreencubeCoolingEquipmentSelection(models.Model):
     user_id = fields.Many2one("res.users", default=lambda self: self.env.user)
     company_id = fields.Many2one("res.company", required=True, default=lambda self: self.env.company)
 
+    # Frozen at selection time (write()/unlink() below make them immutable
+    # once state=validated): product_id is a live reference whose name and
+    # technical specs can change or be archived later. Without these, a
+    # historical selection would silently show today's catalog data instead
+    # of what was actually assessed when the customer's equipment was
+    # chosen (audit P1-08 "historiser prix/données techniques").
+    product_name = fields.Char(help="Product name at selection time.")
+    capacity_at_45c_w = fields.Float(help="Product's capacity_at_45c_w at selection time.")
+    max_outdoor_temperature_c = fields.Float(help="Product's max_outdoor_temperature_c at selection time.")
+    shr = fields.Float(digits=(4, 3), help="Product's SHR at selection time.")
+    eer = fields.Float(help="Product's EER at selection time.")
+    nominal_capacity_w = fields.Float(help="Product's nominal_capacity_w at selection time.")
+
     def action_supersede(self):
         for selection in self:
             if selection.state == "validated":

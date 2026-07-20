@@ -224,4 +224,61 @@
         <field name="domain_force">[('company_id', 'in', company_ids)]</field>
         <field name="groups" eval="[]"/>
     </record>
+
+    <!-- Missed in the P0-05 sweep (occupancy/equipment/ventilation/shading/
+         result/result_component got this pattern; snapshot didn't): any
+         User-group member in the same company could otherwise read/write
+         any other user's snapshot. Caught while adding the job/artifact
+         rules below, since a job references a snapshot the same way a
+         result does. -->
+    <record id="rule_calculation_snapshot_own_user" model="ir.rule">
+        <field name="name">GreenCube Cooling Calculation Snapshot: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_snapshot"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_calculation_snapshot_technician_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Calculation Snapshot: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_snapshot"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_calculation_job_company" model="ir.rule">
+        <field name="name">GreenCube Calculation Job: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_job"/>
+        <field name="domain_force">[('study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_calculation_job_own_user" model="ir.rule">
+        <field name="name">GreenCube Calculation Job: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_job"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_calculation_job_technician_company" model="ir.rule">
+        <field name="name">GreenCube Calculation Job: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_job"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
+
+    <record id="rule_simulation_artifact_company" model="ir.rule">
+        <field name="name">GreenCube Simulation Artifact: multi-company</field>
+        <field name="model_id" ref="model_greencube_cooling_simulation_artifact"/>
+        <field name="domain_force">[('job_id.study_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+    <record id="rule_simulation_artifact_own_user" model="ir.rule">
+        <field name="name">GreenCube Simulation Artifact: user owns via job/study</field>
+        <field name="model_id" ref="model_greencube_cooling_simulation_artifact"/>
+        <field name="domain_force">[('job_id.study_id.user_id', '=', user.id)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_simulation_artifact_technician_company" model="ir.rule">
+        <field name="name">GreenCube Simulation Artifact: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_simulation_artifact"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
+    </record>
 </odoo>

@@ -32,6 +32,8 @@ de données métier.
         "data/solver_version_data.xml",
         "data/commercial_capacity_data.xml",
         "data/cooling_equipment_data.xml",
+        "data/thermal_specification_catalog_data.xml",
+        "data/energyplus_cron_data.xml",
         "views/cooling_study_views.xml",
         "views/thermal_specification_views.xml",
         "views/greencube_cooling_menus.xml",

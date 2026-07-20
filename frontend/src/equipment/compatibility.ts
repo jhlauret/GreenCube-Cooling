@@ -1,3 +1,10 @@
+/**
+ * Not used by any production route — compatibility scoring actually runs
+ * in Odoo (`addons/greencube_cooling/services/compatibility.py`, exposed
+ * via `POST /studies/<id>/equipment-recommendations`). Kept only as the
+ * reference `compatibility.test.ts` checks the Python port against
+ * (audit GC-COOLING-06 pt.11).
+ */
 import type { CatalogProduct } from '../api/mockCatalog';
 import type { MercureScenarioResult } from '../mercure/types';
 

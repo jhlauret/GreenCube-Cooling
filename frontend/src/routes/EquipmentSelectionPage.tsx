@@ -5,8 +5,22 @@ import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { useStudyStore } from '../store/studyStore';
-import { getEquipmentRecommendations, postEquipmentSelection, type EquipmentRecommendation } from '../api/study';
+import {
+  getEquipmentRecommendations,
+  listEquipmentSelections,
+  postEquipmentSelection,
+  type EquipmentRecommendation,
+  type EquipmentSelection,
+} from '../api/study';
 import { ApiError } from '../api/client';
+
+const SELECTION_STATE_LABELS: Record<string, string> = {
+  selected: 'Sélectionné',
+  validated: 'Validé',
+  superseded: 'Remplacé',
+  cancelled: 'Annulé',
+  quoted: 'Devisé',
+};
 
 const STATUS_LABELS: Record<string, string> = {
   recommended: 'Recommandé',
@@ -32,9 +46,16 @@ export function EquipmentSelectionPage() {
   const updateStudy = useStudyStore((state) => state.updateStudy);
 
   const [recommendations, setRecommendations] = useState<EquipmentRecommendation[]>([]);
+  const [history, setHistory] = useState<EquipmentSelection[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectingId, setSelectingId] = useState<number | null>(null);
+
+  function refreshHistory(backendId: number) {
+    listEquipmentSelections(backendId)
+      .then(setHistory)
+      .catch(() => undefined);
+  }
 
   useEffect(() => {
     if (!study?.backendId) {
@@ -58,6 +79,7 @@ export function EquipmentSelectionPage() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    refreshHistory(study.backendId);
     return () => {
       cancelled = true;
     };
@@ -69,6 +91,7 @@ export function EquipmentSelectionPage() {
     try {
       await postEquipmentSelection(study.backendId, productId);
       updateStudy(study.id, { selectedEquipmentProductId: String(productId), status: 'calculated' });
+      refreshHistory(study.backendId);
     } finally {
       setSelectingId(null);
     }
@@ -149,6 +172,36 @@ export function EquipmentSelectionPage() {
               );
             })}
           </div>
+        )}
+
+        {history.length > 0 && (
+          <Card title="Historique des sélections" className="mt-4">
+            <p className="mb-3 text-xs text-ink-faint">
+              Prix et données techniques figés au moment de la sélection — indépendants d'une évolution
+              ultérieure du catalogue (une sélection « Validé » est immuable).
+            </p>
+            <div className="flex flex-col divide-y divide-border">
+              {history.map((s) => (
+                <div key={s.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <div>
+                    <span className="font-medium text-ink">{s.product_name}</span>
+                    <span className="ml-2 text-xs text-ink-faint">
+                      {((s.capacity_at_45c_w ?? 0) / 1000).toFixed(2)} kW · SHR {s.shr} ·{' '}
+                      {(s.price ?? 0).toLocaleString('fr-FR')} {s.currency ?? ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-ink-faint">
+                      {s.created_at ? new Date(s.created_at).toLocaleDateString('fr-FR') : ''}
+                    </span>
+                    <Badge tone={s.state === 'validated' ? 'brand' : s.state === 'superseded' ? 'neutral' : 'warn'}>
+                      {SELECTION_STATE_LABELS[s.state] ?? s.state}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
         )}
       </main>
     </div>

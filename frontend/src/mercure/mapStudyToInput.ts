@@ -1,3 +1,10 @@
+/**
+ * Not used by any production route — the equivalent mapping
+ * (`_build_mercure_input`) runs server-side in
+ * `addons/greencube_cooling/models/cooling_study.py` against real Odoo
+ * data, not this client-side draft. Kept only for `engine.test.ts`
+ * (audit GC-COOLING-06 pt.11).
+ */
 import type { StudyDraft } from '../types/study';
 import type { ClimateScenario, MercureInput } from './types';
 
@@ -87,13 +94,11 @@ export function mapStudyToMercureInput(study: StudyDraft): MercureInput {
           areaM2: f.glazedAreaM2,
           uValueWm2k: 1.3,
           solarFactor: 0.5,
-          protectionFactor: study.orientation.solarProtections.length > 0
-            ? study.orientation.protectionEfficiency === 'high'
-              ? 0.5
-              : study.orientation.protectionEfficiency === 'medium'
-                ? 0.7
-                : 0.85
-            : 1,
+          // Kept as a fixed 0.7 placeholder: this file isn't used by any
+          // production route (see header comment), only by engine.test.ts's
+          // TS/Python parity checks, which don't exercise per-protection-type
+          // efficiency (that logic now lives in sync/syncStudy.ts).
+          protectionFactor: study.orientation.solarProtections.length > 0 ? 0.7 : 1,
           shadeFactor: 1,
         })),
     },

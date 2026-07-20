@@ -20,9 +20,19 @@ boundary; the day-to-day quick path stays MERCURE.
 """
 import importlib.util
 import logging
+import os
 import shutil
 
 _logger = logging.getLogger(__name__)
+
+
+def is_energyplus_enabled():
+    """GC-COOLING-05A pt.8: every EnergyPlus-adjacent feature (Honeybee
+    translation included) stays behind this flag, default off, so an
+    accidental engine=energyplus request never does more than emit a
+    disabled-feature warning even on a server that happens to have the
+    stack installed."""
+    return os.environ.get("GC_COOLING_ENERGYPLUS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
 
 class EnergyPlusUnavailableError(Exception):

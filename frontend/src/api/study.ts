@@ -65,6 +65,9 @@ export interface BackendStudySummary {
   reference: string | null;
   name: string;
   state: string;
+  revision_number: number;
+  parent_study_id: number | null;
+  root_study_id: number | null;
   location: { address: string | null; city: string | null };
   confidence_score: number;
   active_result_id: number | null;
@@ -87,6 +90,18 @@ export function patchStudy(id: number, vals: Record<string, unknown>) {
   return apiFetch(`/studies/${id}`, { method: 'PATCH', body: vals });
 }
 
+/** Locks the study (state -> validated); requires state=calculated first. */
+export function validateStudy(id: number) {
+  return apiFetch<BackendStudySummary>(`/studies/${id}/validate`, { method: 'POST' });
+}
+
+/** Creates a new draft revision of a validated (locked) study, copying its
+ * sub-lines. Returns the new revision's id — the caller should switch the
+ * local draft to track it, not the original. */
+export function createRevision(id: number) {
+  return apiFetch<BackendStudySummary>(`/studies/${id}/revisions`, { method: 'POST' });
+}
+
 export interface BackendFacade {
   id: number;
   orientation: string;
@@ -96,11 +111,20 @@ export interface BackendFacade {
 
 export interface BackendThermalSpecification {
   id: number;
+  code: string;
+  version: string;
+  standard_model: boolean;
+  source_template_id: number | null;
+  source_template_version: string | null;
   length_m: number;
   width_m: number;
   height_m: number;
   wall_u_value: number;
+  roof_u_value: number;
+  floor_u_value: number;
   airtightness_n50: number;
+  thermal_mass_level: string;
+  notes: string | false;
   facades: BackendFacade[];
 }
 
@@ -110,6 +134,11 @@ export function getThermalSpecification(id: number) {
 
 export function putThermalSpecification(id: number, vals: Record<string, unknown>) {
   return apiFetch(`/studies/${id}/thermal-specification`, { method: 'PUT', body: vals });
+}
+
+/** The canonical GreenCube model catalog (GC-COOLING-08) — never hardcode these client-side. */
+export function getThermalSpecificationTemplates() {
+  return apiFetch<BackendThermalSpecification[]>('/thermal-specification-templates');
 }
 
 export interface BackendOccupancyProfile {
@@ -254,7 +283,16 @@ export function getEquipmentRecommendations(id: number) {
 export interface EquipmentSelection {
   id: number;
   product_id: number;
+  /** Frozen at selection time — not a live lookup, so a later catalog
+   * rename/respec doesn't silently rewrite this selection's history. */
   product_name: string;
+  capacity_at_45c_w: number;
+  max_outdoor_temperature_c: number;
+  shr: number;
+  eer: number;
+  nominal_capacity_w: number;
+  price: number;
+  currency: string | null;
   compatibility_status: string;
   state: string;
   result_id: number;

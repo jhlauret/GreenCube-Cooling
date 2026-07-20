@@ -52,11 +52,15 @@ export function UsageStep() {
               <LabeledNumber
                 label="Nombre habituel d'occupants"
                 value={usage.usualOccupants}
+                min={0}
+                max={200}
                 onChange={(v) => updateStudy(studyId, { usage: { ...usage, usualOccupants: v } })}
               />
               <LabeledNumber
                 label="Nombre maximal d'occupants"
                 value={usage.maximumOccupants}
+                min={usage.usualOccupants}
+                max={200}
                 onChange={(v) => updateStudy(studyId, { usage: { ...usage, maximumOccupants: v } })}
               />
             </div>
@@ -64,11 +68,15 @@ export function UsageStep() {
               <LabeledNumber
                 label="Heure de début d'occupation"
                 value={usage.occupancyStartHour}
+                min={0}
+                max={23}
                 onChange={(v) => updateStudy(studyId, { usage: { ...usage, occupancyStartHour: v } })}
               />
               <LabeledNumber
                 label="Heure de fin d'occupation"
                 value={usage.occupancyEndHour}
+                min={0}
+                max={23}
                 onChange={(v) => updateStudy(studyId, { usage: { ...usage, occupancyEndHour: v } })}
               />
             </div>
@@ -99,14 +107,31 @@ export function UsageStep() {
   );
 }
 
-function LabeledNumber({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function LabeledNumber({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 9999,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+}) {
   return (
     <label className="flex flex-col gap-1 text-xs text-ink-soft">
       {label}
       <input
         type="number"
+        min={min}
+        max={max}
         value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => {
+          const raw = Number(e.target.value);
+          if (Number.isFinite(raw)) onChange(Math.min(max, Math.max(min, raw)));
+        }}
         className="rounded-lg border border-border px-3 py-2 text-sm text-ink outline-none focus:border-brand-500"
       />
     </label>

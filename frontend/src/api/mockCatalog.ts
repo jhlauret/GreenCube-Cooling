@@ -1,3 +1,11 @@
+/**
+ * Not used by any production route (verified: absent from `dist/assets/*.js`
+ * — Vite tree-shakes it since nothing in `src/routes` imports it anymore).
+ * Kept only as a fixture for `equipment/compatibility.ts`'s own tests and
+ * as the reference the real Odoo catalog (`GET /equipment-catalog`) was
+ * modeled on. Do not import this from a page/route — use `api/study.ts`'s
+ * `getEquipmentCatalog()` instead (audit GC-COOLING-06 pt.11).
+ */
 export interface CatalogProduct {
   id: string;
   name: string;

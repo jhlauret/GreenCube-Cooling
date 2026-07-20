@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend (lint, typecheck, build, unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      # `npm run build` runs `tsc -b && vite build`, so this covers
+      # typecheck + build in one step (audit P0-01/GC-COOLING-06 pt.14).
+      - run: npm run build
+      - run: npm test
+
+  backend-pure-python:
+    name: Backend (syntax check + ORM-independent unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Parse every Python/XML file in the module
+        run: |
+          python3 - <<'PY'
+          import ast, xml.etree.ElementTree as ET, pathlib
+          root = pathlib.Path("addons/greencube_cooling")
+          for f in root.rglob("*.py"):
+              ast.parse(f.read_text())
+          for f in root.rglob("*.xml"):
+              ET.parse(f)
+          print("backend files parsed OK")
+          PY
+      - name: Run pure-Python test suites (MERCURE engine, serialization, compatibility, Honeybee translator — no odoo import)
+        working-directory: addons/greencube_cooling/tests
+        run: python3 -m unittest test_mercure_engine.py test_mercure_serialization.py test_compatibility.py test_honeybee_translator.py -v
+
+  backend-odoo:
+    name: Backend (Odoo TransactionCase + HttpCase suite)
+    runs-on: ubuntu-latest
+    # NOTE: written against Odoo 18's official docker image and documented
+    # HttpCase API, but never actually executed — there is no Odoo install
+    # available in the sandboxed environment this workflow was authored in
+    # (see README.md's verification-limits section). Treat the first runs
+    # of this job as a shakedown: path/flag issues are expected and should
+    # be fixed here rather than assumed correct. This closes the audit gap
+    # ("aucun HttpCase n'est livré") but only once it has actually run green.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    container:
+      image: odoo:18.0
+      options: --user root
+    env:
+      HOST: postgres
+      USER: odoo
+      PASSWORD: odoo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+      - name: Link this module into the image's default extra-addons path
+        run: |
+          mkdir -p /mnt/extra-addons
+          ln -s "$GITHUB_WORKSPACE/repo/addons/greencube_cooling" /mnt/extra-addons/greencube_cooling
+      - name: Install module and run its TransactionCase + HttpCase tests
+        run: |
+          odoo \
+            -d ci_greencube_cooling \
+            -i greencube_cooling \
+            --without-demo=all \
+            --test-enable \
+            --stop-after-init \
+            --max-cron-threads=0

@@ -7,8 +7,27 @@ import { useWizardNav } from '../useWizardNav';
 import type { StudyDraft } from '../../types/study';
 import { useStudyStore } from '../../store/studyStore';
 import { syncStudyToBackend } from '../../sync/syncStudy';
-import { calculate, confirmAssumptions, getValidation, type ValidationReport } from '../../api/study';
+import {
+  calculate,
+  confirmAssumptions,
+  createRevision,
+  getStudy,
+  getValidation,
+  validateStudy,
+  type BackendStudySummary,
+  type ValidationReport,
+} from '../../api/study';
+import { loadStudyFromBackend } from '../../sync/syncStudy';
 import { ApiError } from '../../api/client';
+
+const PROVENANCE_DISPLAY: Record<string, { label: string; tone: 'brand' | 'warn' | 'neutral' }> = {
+  catalog: { label: 'Catalogue', tone: 'brand' },
+  api: { label: 'Mesurée (API)', tone: 'brand' },
+  user_confirmed: { label: 'Confirmée par vous', tone: 'brand' },
+  estimated_reference: { label: 'Estimée (valeur de référence)', tone: 'warn' },
+  estimated_manual: { label: 'Estimée (saisie manuelle)', tone: 'warn' },
+  missing_fallback: { label: 'Manquante (repli)', tone: 'warn' },
+};
 
 export function ReviewStep() {
   const { study } = useOutletContext<{ study: StudyDraft }>();
@@ -17,9 +36,11 @@ export function ReviewStep() {
   const navigate = useNavigate();
 
   const [validation, setValidation] = useState<ValidationReport | null>(null);
+  const [backendStudy, setBackendStudy] = useState<BackendStudySummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [calculating, setCalculating] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -28,8 +49,11 @@ export function ReviewStep() {
       setSyncError(null);
       try {
         const backendId = await syncStudyToBackend(study, (id) => updateStudy(study.id, { backendId: id }));
-        const report = await getValidation(backendId);
-        if (!cancelled) setValidation(report);
+        const [report, summary] = await Promise.all([getValidation(backendId), getStudy(backendId)]);
+        if (!cancelled) {
+          setValidation(report);
+          setBackendStudy(summary);
+        }
       } catch (err) {
         if (!cancelled) {
           setSyncError(err instanceof ApiError ? err.message : "Impossible de contacter l'API GreenCube Cooling.");
@@ -44,6 +68,43 @@ export function ReviewStep() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [study.id]);
+
+  async function handleValidateStudy() {
+    if (!study.backendId) return;
+    setLifecycleBusy(true);
+    setSyncError(null);
+    try {
+      const summary = await validateStudy(study.backendId);
+      setBackendStudy(summary);
+    } catch (err) {
+      setSyncError(err instanceof ApiError ? err.message : "Impossible de valider l'étude.");
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  /** A validated study is locked: further edits require a new revision.
+   * The local draft switches to track the new revision's backend id — from
+   * the user's point of view they keep editing "the same" study, which now
+   * happens to be revision N+1 (audit P1-07: revision/history exposed in
+   * the frontend, not only reachable via direct Odoo backend access). */
+  async function handleCreateRevision() {
+    if (!study.backendId) return;
+    setLifecycleBusy(true);
+    setSyncError(null);
+    try {
+      const summary = await createRevision(study.backendId);
+      const patch = await loadStudyFromBackend(summary.id);
+      updateStudy(study.id, { ...patch, backendId: summary.id });
+      setBackendStudy(summary);
+      const report = await getValidation(summary.id);
+      setValidation(report);
+    } catch (err) {
+      setSyncError(err instanceof ApiError ? err.message : 'Impossible de créer une révision.');
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
 
   const glazedArea = study.orientation.facades.filter((f) => f.enabled).reduce((s, f) => s + f.glazedAreaM2, 0);
 
@@ -106,6 +167,38 @@ export function ReviewStep() {
         </div>
         {syncError && <p className="mt-3 text-sm text-red-600">{syncError}</p>}
       </Card>
+
+      {backendStudy && (
+        <Card className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-3">
+            <Badge tone={backendStudy.state === 'validated' ? 'brand' : 'neutral'}>
+              {backendStudy.state === 'validated'
+                ? 'Validée'
+                : backendStudy.state === 'calculated'
+                  ? 'Calculée'
+                  : backendStudy.state === 'ready'
+                    ? 'Prête'
+                    : backendStudy.state === 'incomplete'
+                      ? 'Incomplète'
+                      : 'Brouillon'}
+            </Badge>
+            <span className="text-sm text-ink-soft">
+              Révision {backendStudy.revision_number}
+              {backendStudy.parent_study_id && ' (créée à partir d\'une étude verrouillée)'}
+            </span>
+          </div>
+          {backendStudy.state === 'calculated' && (
+            <Button variant="secondary" disabled={lifecycleBusy} onClick={() => void handleValidateStudy()}>
+              {lifecycleBusy ? 'Validation…' : 'Valider cette étude (verrouille les données)'}
+            </Button>
+          )}
+          {backendStudy.state === 'validated' && (
+            <Button variant="secondary" disabled={lifecycleBusy} onClick={() => void handleCreateRevision()}>
+              {lifecycleBusy ? 'Création…' : 'Créer une révision pour continuer à modifier'}
+            </Button>
+          )}
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <ReviewCard title="Site" confirmed={study.location.climateConfirmed}>
@@ -176,7 +269,36 @@ export function ReviewStep() {
             </Button>
           )}
         </Card>
+
+        {validation && Object.keys(validation.provenance_summary).length > 0 && (
+          <Card title="Provenance des données utilisées" className="sm:col-span-2 lg:col-span-1">
+            <p className="mb-2 text-xs text-ink-faint">
+              Répartition des lignes d'occupation, équipements, ventilation et protections par origine —
+              renvoyée par le backend, pas une estimation locale.
+            </p>
+            <div className="flex flex-col gap-1.5 text-sm">
+              {Object.entries(validation.provenance_summary).map(([code, count]) => {
+                const display = PROVENANCE_DISPLAY[code] ?? { label: code, tone: 'neutral' as const };
+                return (
+                  <div key={code} className="flex items-center justify-between gap-2">
+                    <Badge tone={display.tone}>{display.label}</Badge>
+                    <span className="text-ink-soft">{count}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        )}
       </div>
+
+      <Card>
+        <p className="text-sm font-medium text-ink">Champs affichés mais non utilisés par le calcul</p>
+        <p className="mt-1 text-sm text-ink-soft">
+          Composition des murs, isolation (mm) et type de vitrage (étape Modèle) sont affichés à titre
+          indicatif mais ne sont pas transmis au solver MERCURE aujourd'hui — seul le coefficient U moyen
+          l'est. Ces champs portent la mention « ℹ️ non utilisé dans le calcul » dans leur étape.
+        </p>
+      </Card>
 
       <Card className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
         <div>

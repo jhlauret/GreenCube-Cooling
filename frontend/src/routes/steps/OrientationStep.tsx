@@ -6,9 +6,19 @@ import { useWizardNav } from '../useWizardNav';
 import { useStudyStore } from '../../store/studyStore';
 import type { Facade, StudyDraft } from '../../types/study';
 import { defaultNextSteps } from './defaultNextSteps';
+import { facadeGrossAreaM2 } from '../../sync/syncStudy';
 
 const FACADE_LABELS: Record<Facade, string> = { north: 'Nord', south: 'Sud', east: 'Est', west: 'Ouest' };
-const PROTECTIONS = ['Stores intérieurs', 'Stores extérieurs', 'Brise-soleil', 'Casquette solaire', 'Ombrage naturel'];
+/** Keys must match sync/syncStudy.ts's PROTECTION_TYPE_CONFIG exactly —
+ * each has a distinct backend shading_type and efficiency, sorted here by
+ * that efficiency so the "protection appliquée" hint below reads naturally. */
+const PROTECTIONS: { label: string; efficiencyPercent: number }[] = [
+  { label: 'Stores intérieurs', efficiencyPercent: 15 },
+  { label: 'Ombrage naturel', efficiencyPercent: 25 },
+  { label: 'Casquette solaire', efficiencyPercent: 35 },
+  { label: 'Brise-soleil', efficiencyPercent: 40 },
+  { label: 'Stores extérieurs', efficiencyPercent: 50 },
+];
 
 export function OrientationStep() {
   const { study } = useOutletContext<{ study: StudyDraft }>();
@@ -74,7 +84,9 @@ export function OrientationStep() {
 
           <Card title="Façades et surfaces vitrées">
             <div className="grid grid-cols-2 gap-3">
-              {orientation.facades.map((f) => (
+              {orientation.facades.map((f) => {
+                const wallAreaM2 = facadeGrossAreaM2(f.facade, study);
+                return (
                 <div
                   key={f.facade}
                   className={
@@ -100,18 +112,24 @@ export function OrientationStep() {
                     </button>
                   </div>
                   <label className="text-xs text-ink-faint">
-                    Surface vitrée (m²)
+                    Surface vitrée (m²) — mur : {wallAreaM2.toFixed(1)} m²
                     <input
                       type="number"
                       step="0.5"
+                      min={0}
+                      max={wallAreaM2}
                       value={f.glazedAreaM2}
                       disabled={!f.enabled}
-                      onChange={(e) => setGlazedArea(f.facade, Number(e.target.value))}
+                      onChange={(e) => {
+                        const raw = Number(e.target.value);
+                        if (Number.isFinite(raw)) setGlazedArea(f.facade, Math.min(wallAreaM2, Math.max(0, raw)));
+                      }}
                       className="mt-1 w-full rounded-lg border border-border px-2 py-1.5 text-sm outline-none focus:border-brand-500 disabled:bg-surface-muted"
                     />
                   </label>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </Card>
 
@@ -119,20 +137,31 @@ export function OrientationStep() {
             <div className="flex flex-wrap gap-2">
               {PROTECTIONS.map((p) => (
                 <button
-                  key={p}
-                  onClick={() => toggleProtection(p)}
+                  key={p.label}
+                  onClick={() => toggleProtection(p.label)}
                   className={
                     'rounded-full border px-3 py-1.5 text-sm ' +
-                    (orientation.solarProtections.includes(p)
+                    (orientation.solarProtections.includes(p.label)
                       ? 'border-brand-500 bg-brand-50 text-brand-700'
                       : 'border-border text-ink-soft hover:border-brand-300')
                   }
                 >
-                  {p}
-                  {orientation.solarProtections.includes(p) && ' ✓'}
+                  {p.label} ({p.efficiencyPercent} %)
+                  {orientation.solarProtections.includes(p.label) && ' ✓'}
                 </button>
               ))}
             </div>
+            {orientation.solarProtections.length > 1 && (
+              <p className="mt-3 text-xs text-ink-faint">
+                Plusieurs protections sélectionnées : seule la plus efficace (
+                {[...orientation.solarProtections].sort(
+                  (a, b) =>
+                    (PROTECTIONS.find((p) => p.label === b)?.efficiencyPercent ?? 0) -
+                    (PROTECTIONS.find((p) => p.label === a)?.efficiencyPercent ?? 0),
+                )[0]}
+                ) est appliquée au calcul — le cumul de plusieurs dispositifs n'est pas encore modélisé.
+              </p>
+            )}
           </Card>
         </div>
 
@@ -142,13 +171,19 @@ export function OrientationStep() {
             <StatTile icon="🪟" label="Surface vitrée totale" value={`${totalGlazedArea.toFixed(1)} m²`} />
             <StatTile
               icon="🛡️"
-              label="Niveau de protection"
+              label="Protection appliquée"
               value={
-                orientation.protectionEfficiency === 'high'
-                  ? 'Élevée'
-                  : orientation.protectionEfficiency === 'medium'
-                    ? 'Moyenne'
-                    : 'Faible'
+                orientation.solarProtections.length === 0
+                  ? 'Aucune'
+                  : `${[...orientation.solarProtections].sort(
+                      (a, b) =>
+                        (PROTECTIONS.find((p) => p.label === b)?.efficiencyPercent ?? 0) -
+                        (PROTECTIONS.find((p) => p.label === a)?.efficiencyPercent ?? 0),
+                    )[0]} (${Math.max(
+                      ...orientation.solarProtections.map(
+                        (label) => PROTECTIONS.find((p) => p.label === label)?.efficiencyPercent ?? 0,
+                      ),
+                    )} %)`
               }
             />
           </div>

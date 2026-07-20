@@ -174,9 +174,13 @@ Changements :
   `api/mockCatalog.ts`. Les ports TS (`mercure/engine.ts`, `equipment/compatibility.ts`) et
   `mockCatalog.ts` restent dans le repo (ils ont servi de référence au portage Python et à
   `engine.test.ts`) mais ne sont plus appelés par aucune page.
-  Limite assumée : pas de TanStack Query/autosave par champ — la synchronisation se fait par appel
-  explicite à des points de contrôle (changement d'étape, ouverture de Review, lancement du calcul), pas
-  en temps réel à chaque frappe.
+  Limite assumée à cette date (2026-07-18) : pas de TanStack Query/autosave. **Mise à jour du
+  2026-07-20 :** un autosave debouncé existe depuis (`frontend/src/sync/useAutosave.ts`, 1,5 s après la
+  dernière modification, statuts local/dirty/saving/synced/error visibles dans `AppHeader`) — voir la
+  section « Lot P0 — clôture des 3 manques restants » plus bas. TanStack Query, lui, n'a toujours pas été
+  introduit : la synchronisation reste un ensemble d'appels `fetch` directs dans `api/study.ts`, pas des
+  requêtes mises en cache/invalidées par une lib dédiée — alors même que `@tanstack/react-query` est
+  présent dans `package.json` depuis le début de ce dépôt, jamais importé nulle part dans `src/`.
 - **Catalogue équipement réel — ajouté** : `data/cooling_equipment_data.xml` (6 `product.template` avec
   `is_cooling_equipment=True`, mêmes caractéristiques que l'ancien `mockCatalog.ts`), chargé au lot data
   (pas demo) donc disponible en production.
@@ -251,12 +255,201 @@ Ce lot corrige ceux qui sont du ressort du code de ce dépôt :
   désormais les protections solaires côté Odoo quand elles sont retirées côté UI (P2-06, comportement
   auparavant destructif dans un seul sens).
 
-**Non traité dans ce lot** (P1/P2 de l'audit, hors urgence de recette) : modèles GreenCube toujours
-décoratifs (P1-01), orientation principale sans effet sur la géométrie (P1-02), protections solaires
-réduites à un type générique (P1-03), score de fiabilité pré-calcul (P1-05), cycle révision/validation
-absent du frontend (P1-07), immutabilité de la sélection d'équipement non garantie en écriture (P1-08),
-EnergyPlus toujours non implémenté/non asynchrone (P1-09), et l'ensemble des écarts P2 (validation
-Zod/RHF, pagination, export, accessibilité, tests Playwright/HTTP en CI...).
+**Non traité dans ce lot initial** (P1/P2 de l'audit) : cycle révision/validation absent du frontend
+(P1-07 — **traité plus tard**, voir « Lot P1 » plus bas), immutabilité de la sélection d'équipement non
+garantie en écriture (P1-08 — **traité plus tard**, voir ci-dessous), EnergyPlus toujours non
+implémenté/non asynchrone (P1-09 — reste non traité, voir « Lot simulation »), et l'ensemble des écarts P2
+restants — validation Zod/RHF complète (reste non traité), export (reste non traité), accessibilité
+(partiellement traité, voir « Lot qualité »), tests Playwright (écrits mais **jamais exécutés**, voir
+« Lot qualité »).
+
+## Lot P0 — clôture des 3 manques restants (2026-07-20, suite)
+
+Après un premier passage, trois points du "Lot de stabilisation P0" du plan de correction restaient
+ouverts. Ce lot les referme :
+
+- **CI** (`.github/workflows/ci.yml`, nouveau) : trois jobs — `frontend` (npm ci, lint, `npm run build`
+  qui inclut `tsc -b`, vitest), `backend-pure-python` (parsing AST/XML de tout le module + les 21 tests
+  purs), et `backend-odoo` qui installe le module sur une vraie image `odoo:18.0` + Postgres et exécute
+  les tests `TransactionCase`/`HttpCase` via `--test-enable`. **Le job `backend-odoo` n'a jamais été
+  exécuté** : il a été écrit à partir de la documentation de l'image Docker officielle et de l'API
+  `HttpCase` d'Odoo 18, mais aucun Odoo n'est installé dans cet environnement pour le valider avant le
+  premier vrai run sur GitHub Actions. Les deux premiers jobs, eux, reproduisent exactement les commandes
+  utilisées manuellement tout au long de ce lot et donc sont bien couverts empiriquement.
+- **Tests HTTP d'intégration** (`tests/test_http_api.py`, nouveau) : `HttpCase` réels (pas
+  `TransactionCase`) couvrant le parcours complet création → spécification → occupation → ventilation →
+  validation → calcul → résultat pour un utilisateur du groupe `User` simple, le contrat job → résultat
+  (`POST /calculations` ne doit pas contenir le résultat complet), l'idempotence (même clé →
+  même `result_id`), le refus IDOR cross-utilisateur/cross-société sur `PATCH/DELETE /equipment-loads/<id>`
+  (403 `COOLING_ACCESS_DENIED`), et le conflit de version optimiste sur `PATCH /studies/<id>` (409). **Ces
+  tests aussi sont non exécutés** dans cet environnement — voir l'avertissement en tête du fichier. C'est
+  la même limite que celle déjà documentée pour `tests/test_cooling_study.py`.
+- **Cache de brouillon contrôlé** : le store Zustand restait la seule source active pendant la saisie,
+  sans autosave ni indicateur d'état réel. Ajout de `sync/useAutosave.ts` : un hook debouncé (1,5 s après
+  la dernière modification) branché sur `StudyLayout` (donc actif sur les 7 étapes, `review` compris —
+  `ResultsPage`/`EquipmentSelectionPage` restent en synchronisation explicite/synchrone comme avant, pas
+  concernées). Statuts réels affichés dans `AppHeader` : `local` (jamais synchronisé), `dirty` (modifié
+  depuis le dernier sync), `saving`, `synced`, `error` (avec message au survol). Le statut "saving/error"
+  est volontairement non persisté (`useSyncStatusStore`, hors `zustand/persist`) pour ne pas afficher une
+  fausse erreur après un rechargement de page ; `lastSyncedAt` (persisté sur `StudyDraft`) sert à calculer
+  `dirty` vs `synced`. Limite assumée : chaque autosave repousse l'intégralité de l'étude (pas de diff
+  partiel, l'API n'expose pas de PATCH granulaire par section) — donc plusieurs requêtes HTTP par cycle de
+  sync, comme c'était déjà le cas aux points de contrôle existants.
+
+## Lot P1 — fidélité métier (2026-07-20, suite)
+
+Vague B du plan de correction (GC-COOLING-08/09/13/16, P1 de l'audit) :
+
+- **GC-COOLING-08 — modèles GreenCube versionnés** : `data/thermal_specification_catalog_data.xml` ajoute
+  un vrai catalogue (Studio/Bureau/Habitat/Commerce), chacun avec dimensions/U-values/façades distinctes.
+  Nouvelle route `GET /thermal-specification-templates`. `ModelStep.tsx` charge ce catalogue au lieu de 4
+  cartes codées en dur ; sélectionner un modèle applique réellement ses valeurs et enregistre
+  `source_template_id`/`source_template_version` (nouveaux champs sur `greencube.thermal.specification`)
+  pour la provenance.
+- **GC-COOLING-09 — orientation et protections** : nouveau champ `main_orientation` sur l'étude (8 points
+  cardinaux). Les 4 façades UI (avant/arrière/gauche/droite) sont tournées autour de cette orientation
+  avant synchronisation, au lieu d'être toujours mappées nord/sud/est/ouest en identité — corrige l'audit
+  P1-02. Chaque protection solaire a maintenant un `shading_type` et une efficacité distincts (au lieu de
+  toujours `external_blind`) ; si plusieurs sont cochées, seule la plus efficace est appliquée et l'UI le
+  signale explicitement (P1-03). Le ratio vitrage/mur est réellement contraint côté backend (l'ancien code
+  gonflait artificiellement la surface de mur envoyée pour ne jamais déclencher la contrainte).
+- **GC-COOLING-13 — confiance pré-calcul** : `get_validation()` renvoie désormais `completeness_score`
+  (calculé depuis la complétude/provenance, disponible avant tout calcul) séparément de
+  `confidence_score` (sortie du solveur, reste à 0 tant qu'aucun calcul n'a tourné) — corrige P1-05.
+- **P1-07 — immutabilité + historisation** : `greencube.cooling.equipment.selection` bloque désormais
+  `write()`/`unlink()` une fois `state=validated` (avant : seul `action_supersede` était protégé). Prix
+  **et** données techniques (capacité à 45 °C, température extérieure max, SHR, EER, capacité nominale,
+  nom produit) sont figés sur la sélection au moment de la création au lieu d'être relus en direct sur le
+  produit catalogue — une sélection historique ne change plus silencieusement si le catalogue évolue.
+  `EquipmentSelectionPage` affiche désormais l'historique des sélections avec ces valeurs figées.
+- **P1-08 — champs utilisés/ignorés/estimés** : `ReviewStep` affiche la répartition `provenance_summary`
+  (catalogue/API/confirmé/estimé/manquant) renvoyée par le backend. Les champs `wallComposition`,
+  `insulationMm`, `glazingType` (affichés dans l'étape Modèle mais jamais transmis au solver) portent
+  désormais la mention « ℹ️ non utilisé dans le calcul ». Six champs qui n'étaient ni affichés nulle part
+  ni utilisés (`roofTiltDeg`, `comfortSensitivity`, `doorOpeningsPerDay`, `airingFrequency`,
+  `airtightnessLevel`, `temperatureTolerance`) ont été supprimés du type `StudyDraft` : code mort, pas de
+  champ à annoter puisqu'aucune UI ne les affichait.
+- **P1-07 (autre volet) — révision/validation exposées au frontend** : `ReviewStep` affiche l'état
+  (brouillon/prête/calculée/validée) et le numéro de révision, avec un bouton « Valider cette étude »
+  (`POST /studies/<id>/validate`) et, une fois verrouillée, « Créer une révision » (`POST
+  /studies/<id>/revisions`) — jusqu'ici ces actions backend existaient mais n'étaient atteignables que
+  directement dans Odoo. Créer une révision fait basculer le brouillon local sur le nouvel id backend (même
+  étude du point de vue de l'utilisateur, nouvelle révision Odoo dessous).
+  **Reste non fait** : pas de vue de diff entre révisions, pas d'historique de toutes les révisions passées
+  (seul le numéro de la révision courante est visible).
+
+## Lot simulation — GC-COOLING-05A/15 (2026-07-20, suite)
+
+**Important — niveau de preuve différent du reste de ce README.** Contrairement aux lots précédents,
+aucun run Odoo réel n'a été possible pour ce lot (toujours pas d'Odoo installé dans cet environnement).
+Seule la partie pure Python (`services/mercure/honeybee_translator.py`) a été réellement exécutée et
+vérifiée (7 tests, voir `tests/test_honeybee_translator.py`, exécutable via
+`python3 -m unittest test_honeybee_translator.py` sans Odoo). Tout le reste — modèles, ACL, `ir.rule`,
+cron, câblage dans `action_calculate()` — est écrit avec le même soin que le reste du module mais **non
+exécuté**, au même titre que `tests/test_http_api.py` déjà signalé dans le lot P0. Ne pas le déclarer
+fonctionnel avant une installation réelle.
+
+- **`services/mercure/honeybee_translator.py`** (nouveau, pur Python, testé) : `build_honeybee_model(mercure_input)`
+  produit un JSON déterministe et checksummé (SHA-256), inspiré du schéma Honeybee (Model/Room/Face/
+  Aperture) sans dépendre du package `honeybee-energy` (absent ici). Mappe géométrie, enveloppe (U
+  équivalent, pas de matériaux en couches), vitrages (une ouverture par façade avec transmittance
+  statique combinant protection/ombrage), occupation, éclairage, équipements agrégés en densité de
+  puissance, infiltration, ventilation et consignes. Refuse explicitement (`HoneybeeTranslationError`)
+  une géométrie non positive ou un vitrage dépassant la surface du mur — jamais de valeur inventée.
+  Chaque appel retourne aussi une liste `diagnostics.assumptions` documentant les simplifications MVP.
+- **`greencube.cooling.calculation.job`** (nouveau modèle) : le `job_id` de l'API référence désormais un
+  vrai enregistrement (`study_id`, `snapshot_id`, `requested_engine`, `status`, `result_id`,
+  `idempotency_key`, horodatage, `energyplus_processing_status`) au lieu de réutiliser l'id du résultat.
+  `action_calculate()` crée ce job avant de lancer MERCURE et le complète juste après — le comportement
+  synchrone existant n'est pas modifié, seul son suivi devient un vrai objet.
+- **`greencube.cooling.simulation.artifact`** (nouveau modèle) : pointeur typé et checksummé vers un
+  fichier produit pendant le traitement d'un job (`honeybee_json`/`epw`/`idf`/`sql`/`log`), stocké comme
+  `ir.attachment` standard plutôt qu'un gros champ binaire directement sur le modèle. Immuable dès la
+  création.
+- **Feature flag `GC_COOLING_ENERGYPLUS_ENABLED`** (défaut : désactivé) : tant qu'il n'est pas à `true`,
+  demander `engine=energyplus`/`both` ne déclenche même pas la traduction Honeybee — juste un
+  avertissement `ENERGYPLUS_DISABLED`. Une fois activé, la traduction (rapide, pur Python) est tentée
+  dans la requête HTTP elle-même (elle ne fait rien de lourd), mais **jamais** l'exécution EnergyPlus :
+  `action_calculate()` n'appelle plus `services.energyplus.run_energyplus_simulation()` — cette fonction
+  n'est plus appelée que depuis le nouveau cron.
+- **Isolation dans un worker (GC-COOLING-15)** : `data/energyplus_cron_data.xml` définit un `ir.cron`
+  (désactivé par défaut, `_cron_process_pending_energyplus_jobs`) qui est le seul point d'entrée
+  autorisé à appeler `run_energyplus_simulation`. Les crons Odoo tournent dans le worker cron dédié,
+  séparé des workers HTTP en mode multi-workers — c'est le mécanisme d'isolation utilisé, sans ajouter
+  de dépendance de file de tâches (Celery/RQ) que ce module n'a pas par ailleurs. En pratique, cette
+  fonction lève toujours `EnergyPlusUnavailableError` aujourd'hui (aucun binaire EnergyPlus ni
+  honeybee-energy/ladybug n'est installé dans un déploiement cible de ce MVP) — le cron transitionne
+  alors `energyplus_processing_status` vers `simulation_unavailable`, sans jamais fabriquer de résultat.
+- **Comparaison MERCURE/EnergyPlus et règle de résultat canonique : non traité.** Comme aucune simulation
+  EnergyPlus ne peut aboutir dans cet environnement (ni probablement dans un déploiement MVP proche),
+  écrire une logique de comparaison entre deux résultats dont l'un n'existe jamais aurait été du code
+  mort non vérifiable. `greencube.cooling.result.state` a toujours les valeurs `success`/`partial`/
+  `failed`/`superseded` : `partial` est déjà utilisé quand `engine=energyplus` seul et que la simulation
+  ne s'est pas terminée (MERCURE reste alors la seule source du nombre affiché).
+- **Bug de sécurité corrigé au passage** : `greencube.cooling.result`/`.result.component` interdisaient
+  `create` au groupe User (`perm_create=0`) alors qu'`action_calculate()` les crée sans `sudo()` —
+  un utilisateur standard appelant le calcul via l'API aurait dû recevoir une `AccessError`. Voir le
+  détail dans `docs/cooling_security_matrix.md`. Une règle de propriété manquante sur
+  `greencube.cooling.calculation.snapshot` (oubliée lors du balayage P0-05 initial) a été corrigée en
+  même temps, découverte en écrivant les règles du nouveau `calculation.job`.
+
+## Lot qualité — P2 (2026-07-20, suite)
+
+- **Tests de composants React — ajoutés et exécutés.** `@testing-library/react`, `@testing-library/user-event`
+  et `@testing-library/jest-dom` étaient déjà dans `package.json` mais n'étaient utilisés nulle part
+  (seul `mercure/engine.test.ts` existait). Ajout de 36 tests réels, tous exécutés avec succès
+  (`npm test`, 49 tests au total avec les 13 déjà existants) :
+  - `sync/syncStudy.test.ts` (11 tests) : vérifie mathématiquement la rotation d'orientation
+    (`rotatedOrientation`/`facadeSlotForOrientation`, aller-retour exhaustif sur les 8 orientations × 4
+    façades, aucune collision) et la résolution de protection dominante — la logique GC-COOLING-09 n'avait
+    jusqu'ici été vérifiée que par relecture, jamais exécutée.
+  - `store/studyStore.test.ts` (7 tests) : `createStudy`/`updateStudy`/`markSynced`/`findByBackendId`,
+    en particulier que `markSynced` ne déclenche pas de boucle d'autosave infinie.
+  - `components/layout/AppHeader.test.tsx` (12 tests) : les 5 états de synchronisation, l'ouverture/
+    fermeture du panneau d'aide (y compris Échap), l'absence de faux positif « Synchronisé ».
+  - `routes/steps/ModelStep.test.tsx` (6 tests) : le catalogue est bien chargé depuis l'API (pas de
+    données codées en dur), l'état de chargement/erreur, et — le plus important — que sélectionner un
+    modèle applique réellement ses dimensions (a révélé un bug du premier jet du test lui-même : le mock
+    de `useOutletContext` n'était pas réactif aux mises à jour du store, corrigé en réutilisant le vrai
+    `<Outlet context>` comme le fait `StudyLayout` en production).
+- **Tests Playwright — écrits, jamais exécutés.** `playwright.config.ts` + `e2e/wizard.spec.ts` (parcours
+  complet localisation → ... → résultats → sélection). Nécessitent un Odoo réel démarré séparément
+  (`VITE_ODOO_ORIGIN`) et une session authentifiée — aucun des deux n'est disponible dans cet
+  environnement. `npx playwright test --list` confirme que la config et le fichier sont au moins
+  syntaxiquement valides ; rien de plus n'a pu être vérifié.
+- **Concurrence/idempotence/deux sociétés — étendu dans `tests/test_http_api.py`** (toujours non exécuté,
+  même réserve que le reste de ce fichier) : `test_two_companies_full_isolation_on_direct_ids` (étude,
+  résultat et liste jamais visibles depuis l'autre société) et
+  `test_idempotency_key_survives_repeated_retries` (3 requêtes identiques → un seul job/résultat). **Limite
+  assumée :** ce sont des vérifications séquentielles dans un seul thread de test, pas une vraie
+  concurrence parallèle (plusieurs threads/process simultanés) — cela nécessiterait une instance Odoo
+  multi-workers réellement démarrée, ce que cet environnement ne permet pas de mettre en place ni de
+  vérifier.
+- **Accessibilité clavier — amélioration ciblée, pas un audit complet.** La base était déjà correcte
+  (tous les éléments cliquables du wizard sont des `<button>`/`<Link>`, tous les champs sont dans un
+  `<label>`). Ajouté : fermeture du panneau d'aide au clavier (Échap), `role="dialog"` +
+  `aria-label` dessus, `aria-live="polite"` sur l'indicateur de statut de synchronisation. **Non fait** :
+  audit complet (contraste des couleurs, ordre de tabulation sur les grilles de cartes, lecteurs d'écran
+  réels), responsive mobile (jamais testé sur un vrai viewport étroit — la CSS Tailwind utilise des
+  breakpoints `sm:`/`lg:` mais rien ne garantit qu'ils rendent correctement en dessous).
+- **README — nettoyage des affirmations contradictoires.** La ligne affirmant l'absence d'autosave
+  (section « Lot suivant », 2026-07-18) contredisait l'autosave ajouté depuis (section « Lot P0 »,
+  2026-07-20) ; corrigée avec un renvoi explicite. Idem pour la liste « non traité » du lot de
+  stabilisation, qui ne pointait pas vers les lots où ces points ont ensuite été traités.
+- **Documents obligatoires du Master V2 — partiellement traités.** GC-COOLING-17 (`GC_COOLING_PROMPTS/`)
+  définit précisément ce qui est attendu : `docs/cooling_v2_initial_state.md` (état initial constaté) et
+  une matrice de traçabilité GC-COOLING-01 à 18. Le premier existe déjà sous une autre forme
+  (`Audit_fonctionnel_GreenCube_Cooling_18-07-2026.md`, à la racine du dépôt — c'est l'état initial
+  documenté avant tous les lots de correction de cette session, pas la peine de le dupliquer). La matrice
+  de traçabilité, elle, n'existait pas : ajoutée dans `docs/cooling_v2_traceability_matrix.md`.
+  Migrations de schéma : aucune n'a été nécessaire pour l'ensemble des lots de cette session (uniquement
+  des champs additifs nullable et de nouveaux modèles) — voir `docs/cooling_security_matrix.md` pour le
+  raisonnement détaillé à chaque ajout de champ. Le reste de GC-COOLING-17 (Docker/compose, sauvegarde/
+  restauration, rollback, healthchecks, logs structurés, décision GO/NO-GO formelle) n'a pas été traité.
+- **Découverte, non traitée** : `@tanstack/react-query`, `zod`, `react-hook-form` et
+  `@hookform/resolvers` sont présents dans `package.json` depuis le début de ce dépôt mais ne sont
+  importés nulle part dans `src/`. Soit un reliquat d'un scaffold jamais branché, soit une intention non
+  réalisée — à clarifier avant de les utiliser ou de les retirer.
 
 ## Ce qui reste en suspens
 

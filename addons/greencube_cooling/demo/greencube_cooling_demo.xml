@@ -4,7 +4,9 @@
         <field name="name">GreenCube Studio 10m² — démo</field>
         <field name="code">demo-studio-10</field>
         <field name="version">1.0</field>
-        <field name="standard_model" eval="True"/>
+        <field name="standard_model" eval="False"/>
+        <field name="source_template_id" ref="thermal_spec_catalog_studio"/>
+        <field name="source_template_version">1.0</field>
         <field name="length_m">4.0</field>
         <field name="width_m">2.5</field>
         <field name="height_m">2.5</field>

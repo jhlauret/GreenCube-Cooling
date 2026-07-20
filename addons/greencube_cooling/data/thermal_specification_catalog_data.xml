@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Canonical GreenCube model catalog (GC-COOLING-08): the standard,
+  versioned thermal specifications a study can be based on. Loaded
+  unconditionally (data, not demo) since these are real catalog entries,
+  not throwaway sample data — the frontend's ModelStep fetches them via
+  GET /thermal-specification-templates instead of hardcoding dimensions.
+-->
+<odoo noupdate="1">
+    <record id="thermal_spec_catalog_studio" model="greencube.thermal.specification">
+        <field name="name">GreenCube Studio</field>
+        <field name="code">gc-studio</field>
+        <field name="version">1.0</field>
+        <field name="standard_model" eval="True"/>
+        <field name="length_m">4.0</field>
+        <field name="width_m">2.5</field>
+        <field name="height_m">2.5</field>
+        <field name="wall_u_value">0.18</field>
+        <field name="roof_u_value">0.16</field>
+        <field name="floor_u_value">0.20</field>
+        <field name="airtightness_n50">0.6</field>
+        <field name="thermal_mass_level">medium</field>
+        <field name="thermal_bridge_factor">0.05</field>
+        <field name="default_infiltration_ach">0.3</field>
+        <field name="notes">Module compact idéal pour un espace de travail ou de vie individuel.</field>
+    </record>
+    <record id="thermal_spec_catalog_studio_south" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_studio"/>
+        <field name="orientation">south</field>
+        <field name="gross_area_m2">6.25</field>
+        <field name="glazing_area_m2">4.0</field>
+        <field name="window_u_value">1.3</field>
+        <field name="solar_factor_g">0.5</field>
+        <field name="visible_transmittance">0.7</field>
+        <field name="default_shading_type">external_blind</field>
+        <field name="default_shading_factor">0.6</field>
+    </record>
+    <record id="thermal_spec_catalog_studio_north" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_studio"/>
+        <field name="orientation">north</field>
+        <field name="gross_area_m2">6.25</field>
+        <field name="glazing_area_m2">0</field>
+    </record>
+    <record id="thermal_spec_catalog_studio_east" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_studio"/>
+        <field name="orientation">east</field>
+        <field name="gross_area_m2">10.0</field>
+        <field name="glazing_area_m2">1.0</field>
+        <field name="window_u_value">1.3</field>
+        <field name="solar_factor_g">0.5</field>
+        <field name="visible_transmittance">0.7</field>
+    </record>
+    <record id="thermal_spec_catalog_studio_west" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_studio"/>
+        <field name="orientation">west</field>
+        <field name="gross_area_m2">10.0</field>
+        <field name="glazing_area_m2">1.0</field>
+        <field name="window_u_value">1.3</field>
+        <field name="solar_factor_g">0.5</field>
+        <field name="visible_transmittance">0.7</field>
+    </record>
+
+    <record id="thermal_spec_catalog_office" model="greencube.thermal.specification">
+        <field name="name">GreenCube Bureau</field>
+        <field name="code">gc-office</field>
+        <field name="version">1.0</field>
+        <field name="standard_model" eval="True"/>
+        <field name="length_m">6.0</field>
+        <field name="width_m">3.0</field>
+        <field name="height_m">2.7</field>
+        <field name="wall_u_value">0.20</field>
+        <field name="roof_u_value">0.18</field>
+        <field name="floor_u_value">0.22</field>
+        <field name="airtightness_n50">0.8</field>
+        <field name="thermal_mass_level">medium</field>
+        <field name="thermal_bridge_factor">0.06</field>
+        <field name="default_infiltration_ach">0.4</field>
+        <field name="notes">Espace professionnel optimisé pour le confort et la productivité, davantage de vitrage pour la lumière naturelle.</field>
+    </record>
+    <record id="thermal_spec_catalog_office_south" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_office"/>
+        <field name="orientation">south</field>
+        <field name="gross_area_m2">8.1</field>
+        <field name="glazing_area_m2">5.0</field>
+        <field name="window_u_value">1.2</field>
+        <field name="solar_factor_g">0.45</field>
+        <field name="visible_transmittance">0.72</field>
+        <field name="default_shading_type">external_blind</field>
+        <field name="default_shading_factor">0.5</field>
+    </record>
+    <record id="thermal_spec_catalog_office_north" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_office"/>
+        <field name="orientation">north</field>
+        <field name="gross_area_m2">8.1</field>
+        <field name="glazing_area_m2">2.0</field>
+        <field name="window_u_value">1.2</field>
+        <field name="solar_factor_g">0.45</field>
+        <field name="visible_transmittance">0.72</field>
+    </record>
+    <record id="thermal_spec_catalog_office_east" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_office"/>
+        <field name="orientation">east</field>
+        <field name="gross_area_m2">16.2</field>
+        <field name="glazing_area_m2">1.5</field>
+        <field name="window_u_value">1.2</field>
+        <field name="solar_factor_g">0.45</field>
+        <field name="visible_transmittance">0.72</field>
+    </record>
+    <record id="thermal_spec_catalog_office_west" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_office"/>
+        <field name="orientation">west</field>
+        <field name="gross_area_m2">16.2</field>
+        <field name="glazing_area_m2">1.5</field>
+        <field name="window_u_value">1.2</field>
+        <field name="solar_factor_g">0.45</field>
+        <field name="visible_transmittance">0.72</field>
+    </record>
+
+    <record id="thermal_spec_catalog_living" model="greencube.thermal.specification">
+        <field name="name">GreenCube Habitat</field>
+        <field name="code">gc-living</field>
+        <field name="version">1.0</field>
+        <field name="standard_model" eval="True"/>
+        <field name="length_m">8.0</field>
+        <field name="width_m">4.0</field>
+        <field name="height_m">2.6</field>
+        <field name="wall_u_value">0.15</field>
+        <field name="roof_u_value">0.13</field>
+        <field name="floor_u_value">0.17</field>
+        <field name="airtightness_n50">0.4</field>
+        <field name="thermal_mass_level">high</field>
+        <field name="thermal_bridge_factor">0.04</field>
+        <field name="default_infiltration_ach">0.25</field>
+        <field name="notes">Habitat modulaire confortable, performant et durable — enveloppe la plus isolée du catalogue.</field>
+    </record>
+    <record id="thermal_spec_catalog_living_south" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_living"/>
+        <field name="orientation">south</field>
+        <field name="gross_area_m2">10.4</field>
+        <field name="glazing_area_m2">6.0</field>
+        <field name="window_u_value">1.0</field>
+        <field name="solar_factor_g">0.55</field>
+        <field name="visible_transmittance">0.75</field>
+        <field name="default_shading_type">overhang</field>
+        <field name="default_shading_factor">0.7</field>
+    </record>
+    <record id="thermal_spec_catalog_living_north" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_living"/>
+        <field name="orientation">north</field>
+        <field name="gross_area_m2">10.4</field>
+        <field name="glazing_area_m2">2.0</field>
+        <field name="window_u_value">1.0</field>
+        <field name="solar_factor_g">0.55</field>
+        <field name="visible_transmittance">0.75</field>
+    </record>
+    <record id="thermal_spec_catalog_living_east" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_living"/>
+        <field name="orientation">east</field>
+        <field name="gross_area_m2">20.8</field>
+        <field name="glazing_area_m2">2.0</field>
+        <field name="window_u_value">1.0</field>
+        <field name="solar_factor_g">0.55</field>
+        <field name="visible_transmittance">0.75</field>
+    </record>
+    <record id="thermal_spec_catalog_living_west" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_living"/>
+        <field name="orientation">west</field>
+        <field name="gross_area_m2">20.8</field>
+        <field name="glazing_area_m2">2.0</field>
+        <field name="window_u_value">1.0</field>
+        <field name="solar_factor_g">0.55</field>
+        <field name="visible_transmittance">0.75</field>
+    </record>
+
+    <record id="thermal_spec_catalog_commerce" model="greencube.thermal.specification">
+        <field name="name">GreenCube Commerce</field>
+        <field name="code">gc-commerce</field>
+        <field name="version">1.0</field>
+        <field name="standard_model" eval="True"/>
+        <field name="length_m">10.0</field>
+        <field name="width_m">5.0</field>
+        <field name="height_m">3.2</field>
+        <field name="wall_u_value">0.22</field>
+        <field name="roof_u_value">0.20</field>
+        <field name="floor_u_value">0.24</field>
+        <field name="airtightness_n50">1.0</field>
+        <field name="thermal_mass_level">low</field>
+        <field name="thermal_bridge_factor">0.07</field>
+        <field name="default_infiltration_ach">0.6</field>
+        <field name="notes">Espace commercial modulable — grande vitrine en façade, forte affluence.</field>
+    </record>
+    <record id="thermal_spec_catalog_commerce_south" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_commerce"/>
+        <field name="orientation">south</field>
+        <field name="gross_area_m2">16.0</field>
+        <field name="glazing_area_m2">12.0</field>
+        <field name="window_u_value">1.4</field>
+        <field name="solar_factor_g">0.4</field>
+        <field name="visible_transmittance">0.68</field>
+        <field name="default_shading_type">brise_soleil</field>
+        <field name="default_shading_factor">0.5</field>
+    </record>
+    <record id="thermal_spec_catalog_commerce_north" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_commerce"/>
+        <field name="orientation">north</field>
+        <field name="gross_area_m2">16.0</field>
+        <field name="glazing_area_m2">0</field>
+    </record>
+    <record id="thermal_spec_catalog_commerce_east" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_commerce"/>
+        <field name="orientation">east</field>
+        <field name="gross_area_m2">32.0</field>
+        <field name="glazing_area_m2">2.0</field>
+        <field name="window_u_value">1.4</field>
+        <field name="solar_factor_g">0.4</field>
+        <field name="visible_transmittance">0.68</field>
+    </record>
+    <record id="thermal_spec_catalog_commerce_west" model="greencube.thermal.facade">
+        <field name="thermal_specification_id" ref="thermal_spec_catalog_commerce"/>
+        <field name="orientation">west</field>
+        <field name="gross_area_m2">32.0</field>
+        <field name="glazing_area_m2">2.0</field>
+        <field name="window_u_value">1.4</field>
+        <field name="solar_factor_g">0.4</field>
+        <field name="visible_transmittance">0.68</field>
+    </record>
+</odoo>

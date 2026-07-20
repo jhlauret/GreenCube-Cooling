@@ -30,6 +30,16 @@ class GreencubeThermalSpecification(models.Model):
     product_template_id = fields.Many2one("product.template", ondelete="restrict", index=True)
     standard_model = fields.Boolean(default=True)
 
+    source_template_id = fields.Many2one(
+        "greencube.thermal.specification",
+        ondelete="set null",
+        index=True,
+        help="Canonical catalog template (standard_model=True) this private specification "
+        "was forked from, if any. Kept even if the source template is later archived or "
+        "changes version, so provenance stays accurate for historical studies.",
+    )
+    source_template_version = fields.Char(help="Version of source_template_id at fork time.")
+
     length_m = fields.Float(required=True, digits=(12, 3))
     width_m = fields.Float(required=True, digits=(12, 3))
     height_m = fields.Float(required=True, digits=(12, 3))

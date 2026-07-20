@@ -47,6 +47,15 @@ export type GreenCubeModelCode = 'studio' | 'office' | 'living' | 'commerce' | '
 
 export interface ModelData {
   modelCode: GreenCubeModelCode;
+  /**
+   * Odoo id of the catalog `greencube.thermal.specification` this model was
+   * applied from, or null for "Personnalisé" (freeform dimensions). Set by
+   * ModelStep when the user picks a real catalog card — never hand-written
+   * (GC-COOLING-08: the four model choices must have a real, versioned,
+   * Odoo-backed effect instead of only changing a decorative label).
+   */
+  templateId: number | null;
+  templateVersion: string | null;
   lengthM: number;
   widthM: number;
   heightM: number;
@@ -68,10 +77,15 @@ export interface FacadeGlazing {
 
 export interface OrientationData {
   mainOrientation: CardinalDirection;
-  roofTiltDeg: number;
   facades: FacadeGlazing[];
+  /**
+   * Labels from OrientationStep's PROTECTIONS list. Each has a fixed
+   * canonical efficiency (see sync/syncStudy.ts's PROTECTION_TYPE_CONFIG) —
+   * there is deliberately no separate low/medium/high efficiency knob
+   * anymore, since that used to be a decorative field with no UI control
+   * and no effect distinct from the protection type itself (audit P1-03).
+   */
   solarProtections: string[];
-  protectionEfficiency: 'low' | 'medium' | 'high';
 }
 
 export type UsageType =
@@ -92,7 +106,6 @@ export interface UsageData {
   activityLevel: 'low' | 'moderate' | 'high';
   occupancyStartHour: number;
   occupancyEndHour: number;
-  comfortSensitivity: 'standard' | 'high';
 }
 
 export interface EquipmentItem {
@@ -109,13 +122,9 @@ export interface EquipmentItem {
 export interface ComfortData {
   ventilationSystem: 'natural' | 'simple_flow' | 'double_flow' | 'dedicated_mechanical';
   estimatedAirflowM3h: number;
-  doorOpeningsPerDay: string;
-  airingFrequency: string;
-  airtightnessLevel: string;
   targetTemperatureRange: string;
   targetHumidityRange: string;
   usedAtNight: boolean;
-  temperatureTolerance: string;
   serviceLevel: 'standard' | 'enhanced' | 'heatwave_resilience';
 }
 
@@ -125,6 +134,10 @@ export interface StudyDraft {
   name: string;
   createdAt: string;
   updatedAt: string;
+  /** Set by the autosave hook after a successful syncStudyToBackend call —
+   * compared against `updatedAt` to derive the dirty/clean sync status
+   * shown in AppHeader (audit P0-04's "cache de brouillon contrôlé"). */
+  lastSyncedAt: string | null;
   status: 'draft' | 'ready' | 'calculated';
   location: LocationData;
   model: ModelData;
@@ -141,6 +154,7 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
   return {
     id,
     backendId: null,
+    lastSyncedAt: null,
     name,
     createdAt: now,
     updatedAt: now,
@@ -157,6 +171,8 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
     },
     model: {
       modelCode: 'studio',
+      templateId: null,
+      templateVersion: null,
       lengthM: 4,
       widthM: 2.5,
       heightM: 2.5,
@@ -168,7 +184,6 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
     },
     orientation: {
       mainOrientation: 'S',
-      roofTiltDeg: 0,
       facades: [
         { facade: 'north', enabled: false, glazedAreaM2: 0 },
         { facade: 'south', enabled: true, glazedAreaM2: 4 },
@@ -176,7 +191,6 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
         { facade: 'west', enabled: false, glazedAreaM2: 0 },
       ],
       solarProtections: [],
-      protectionEfficiency: 'medium',
     },
     usage: {
       usageType: 'office',
@@ -186,20 +200,15 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
       activityLevel: 'moderate',
       occupancyStartHour: 8,
       occupancyEndHour: 18,
-      comfortSensitivity: 'standard',
     },
     equipment: [],
     selectedEquipmentProductId: null,
     comfort: {
       ventilationSystem: 'simple_flow',
       estimatedAirflowM3h: 60,
-      doorOpeningsPerDay: '2 à 4 fois par jour',
-      airingFrequency: '2 fois par jour - 10 min',
-      airtightnessLevel: 'Bonne (n50 <= 1.0 vol/h)',
       targetTemperatureRange: '22-25',
       targetHumidityRange: '45-60',
       usedAtNight: false,
-      temperatureTolerance: 'Modérée (+/-2 C pendant 24h)',
       serviceLevel: 'standard',
     },
     completedSteps: [],

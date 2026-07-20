@@ -1,3 +1,11 @@
+/**
+ * Not used by any production route — MERCURE actually runs in Odoo
+ * (`addons/greencube_cooling/services/mercure/engine.py`), which is the
+ * canonical implementation. This TypeScript port is kept only as the
+ * non-regression reference `engine.test.ts` checks the Python port
+ * against; it must never be reachable from `src/routes` (audit
+ * GC-COOLING-06 pt.11 / GC-COOLING-14: only Python is canonical).
+ */
 import {
   AIR_DENSITY,
   AIR_SPECIFIC_HEAT,

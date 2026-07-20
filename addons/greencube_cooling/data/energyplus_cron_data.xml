@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GC-COOLING-15 worker isolation: this cron is the only scheduled entry
+  point allowed to call services.energyplus.run_energyplus_simulation
+  (see models/calculation_job.py's _cron_process_pending_energyplus_jobs).
+  Odoo cron jobs execute in the dedicated cron worker process (separate
+  from the HTTP request workers when the server runs with multiple workers),
+  which is what keeps a potentially long-running EnergyPlus invocation from
+  blocking a web request — without introducing a new queueing dependency
+  (Celery/RQ/...) this module doesn't otherwise need.
+
+  Inactive by default: even with GC_COOLING_ENERGYPLUS_ENABLED=true there
+  is nothing for this cron to actually run yet (no EnergyPlus binary is
+  ever available in this MVP's target environment), so it stays disabled
+  until an operator deliberately activates it on a server that actually has
+  the simulation stack installed.
+-->
+<odoo noupdate="1">
+    <record id="cron_process_pending_energyplus_jobs" model="ir.cron">
+        <field name="name">GreenCube Cooling: process pending EnergyPlus jobs</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_job"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_process_pending_energyplus_jobs()</field>
+        <field name="interval_number">15</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="False"/>
+    </record>
+</odoo>

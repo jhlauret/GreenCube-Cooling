@@ -100,6 +100,7 @@ def _serialize_study(study):
             "altitude_m": study.altitude_m,
             "environment_type": study.environment_type or None,
             "climate_confirmed": study.climate_confirmed,
+            "main_orientation": study.main_orientation or None,
         },
         "comfort": {
             "cooling_setpoint_c": study.cooling_setpoint_c,
@@ -138,6 +139,8 @@ def _serialize_thermal_spec(spec):
         "version": spec.version,
         "standard_model": spec.standard_model,
         "product_template_id": spec.product_template_id.id or None,
+        "source_template_id": spec.source_template_id.id or None,
+        "source_template_version": spec.source_template_version or None,
         "length_m": spec.length_m,
         "width_m": spec.width_m,
         "height_m": spec.height_m,
@@ -304,6 +307,28 @@ def _serialize_product(product):
     }
 
 
+def _serialize_equipment_selection(selection):
+    return {
+        "id": selection.id,
+        "product_id": selection.product_id.id,
+        # Frozen at selection time, not read live off product_id (audit
+        # P1-08) — a renamed/archived/re-specced product must not silently
+        # rewrite this selection's history.
+        "product_name": selection.product_name,
+        "capacity_at_45c_w": selection.capacity_at_45c_w,
+        "max_outdoor_temperature_c": selection.max_outdoor_temperature_c,
+        "shr": selection.shr,
+        "eer": selection.eer,
+        "nominal_capacity_w": selection.nominal_capacity_w,
+        "price": selection.price,
+        "currency": selection.currency_id.name if selection.currency_id else None,
+        "compatibility_status": selection.compatibility_status,
+        "state": selection.state,
+        "result_id": selection.result_id.id,
+        "created_at": selection.create_date.isoformat() if selection.create_date else None,
+    }
+
+
 class GreencubeCoolingApiController(http.Controller):
 
     # ------------------------------------------------------------------
@@ -380,6 +405,7 @@ class GreencubeCoolingApiController(http.Controller):
             "altitude_m",
             "environment_type",
             "climate_confirmed",
+            "main_orientation",
             "cooling_setpoint_c",
             "night_setpoint_offset_c",
             "target_humidity_percent",
@@ -432,6 +458,18 @@ class GreencubeCoolingApiController(http.Controller):
     # Thermal specification (GC-COOLING-08/09): geometry, envelope, facades
     # ------------------------------------------------------------------
 
+    @http.route(f"{BASE}/thermal-specification-templates", type="http", auth="user", methods=["GET"], csrf=False)
+    @_guarded
+    def list_thermal_specification_templates(self, **kwargs):
+        """The canonical GreenCube model catalog (Studio/Bureau/Habitat/
+        Commerce/...): active, standard_model=True specifications a user
+        can apply as the starting point for their own study (GC-COOLING-08).
+        Custom/private specifications never appear here."""
+        templates = request.env["greencube.thermal.specification"].search(
+            [("standard_model", "=", True)], order="name, version desc"
+        )
+        return _json_response({"data": [_serialize_thermal_spec(t) for t in templates]})
+
     @http.route(
         f"{BASE}/studies/<int:study_id>/thermal-specification", type="http", auth="user", methods=["GET"], csrf=False
     )
@@ -476,12 +514,43 @@ class GreencubeCoolingApiController(http.Controller):
         }
         facades = body.get("facades")
 
+        # Provenance only (GC-COOLING-08): which catalog template, if any,
+        # this private fork was based on. Never make a private spec
+        # standard_model=True through this route — that stays manager-only
+        # (docs/cooling_security_matrix.md).
+        source_template = None
+        source_template_id = body.get("source_template_id")
+        if source_template_id:
+            candidate = request.env["greencube.thermal.specification"].browse(int(source_template_id))
+            if candidate.exists() and candidate.standard_model:
+                source_template = candidate
+
         spec = study.thermal_specification_id
         try:
             if spec and not spec.standard_model and len(spec.study_ids) <= 1 and not spec.is_locked:
                 if spec_vals:
                     spec.write(spec_vals)
+                if source_template:
+                    spec.write(
+                        {"source_template_id": source_template.id, "source_template_version": source_template.version}
+                    )
             else:
+                inherited = (
+                    {
+                        "length_m": source_template.length_m,
+                        "width_m": source_template.width_m,
+                        "height_m": source_template.height_m,
+                        "wall_u_value": source_template.wall_u_value,
+                        "roof_u_value": source_template.roof_u_value,
+                        "floor_u_value": source_template.floor_u_value,
+                        "airtightness_n50": source_template.airtightness_n50,
+                        "thermal_mass_level": source_template.thermal_mass_level,
+                        "thermal_bridge_factor": source_template.thermal_bridge_factor,
+                        "default_infiltration_ach": source_template.default_infiltration_ach,
+                    }
+                    if source_template
+                    else {}
+                )
                 create_vals = {
                     "name": body.get("name") or f"{study.name} — spécification",
                     "code": f"study-{study.id}",
@@ -492,10 +561,37 @@ class GreencubeCoolingApiController(http.Controller):
                     "wall_u_value": 0.3,
                     "roof_u_value": 0.3,
                     "floor_u_value": 0.3,
+                    **inherited,
                     **spec_vals,
+                    **(
+                        {
+                            "source_template_id": source_template.id,
+                            "source_template_version": source_template.version,
+                        }
+                        if source_template
+                        else {}
+                    ),
                 }
                 spec = request.env["greencube.thermal.specification"].create(create_vals)
                 study.write({"thermal_specification_id": spec.id})
+                if source_template and facades is None:
+                    # First fork from a catalog template: also inherit its
+                    # facades so the study isn't left with zero surfaces
+                    # until OrientationStep explicitly overrides them.
+                    for facade in source_template.facade_ids:
+                        request.env["greencube.thermal.facade"].create(
+                            {
+                                "thermal_specification_id": spec.id,
+                                "orientation": facade.orientation,
+                                "gross_area_m2": facade.gross_area_m2,
+                                "glazing_area_m2": facade.glazing_area_m2,
+                                "window_u_value": facade.window_u_value,
+                                "solar_factor_g": facade.solar_factor_g,
+                                "visible_transmittance": facade.visible_transmittance,
+                                "default_shading_type": facade.default_shading_type,
+                                "default_shading_factor": facade.default_shading_factor,
+                            }
+                        )
 
             if facades is not None:
                 spec.facade_ids.unlink()
@@ -786,14 +882,23 @@ class GreencubeCoolingApiController(http.Controller):
             result = study.action_calculate(engine=engine, idempotency_key=idempotency_key)
         except UserError as exc:
             return _error("COOLING_CALCULATION_FAILED", str(exc), status=422, section="results")
+        # action_calculate() always creates a greencube.cooling.calculation.job
+        # (GC-COOLING-15 pt.1) except on the idempotency-key fast path, which
+        # returns the original call's result without creating a new job —
+        # look the original job up by result_id either way, so job_id is
+        # always a real job record, never the result id standing in for one.
+        job = request.env["greencube.cooling.calculation.job"].search(
+            [("result_id", "=", result.id)], limit=1, order="create_date desc"
+        )
         return _json_response(
             {
                 "data": {
-                    "job_id": result.id,
-                    "status": "completed",
+                    "job_id": job.id if job else result.id,
+                    "status": job.status if job else "completed",
                     "result_id": result.id,
                     "engine": "MERCURE",
                     "engine_version": result.solver_version_id.version if result.solver_version_id else None,
+                    "energyplus_processing_status": job.energyplus_processing_status if job else "not_requested",
                     "request_id": _request_id(),
                 }
             },
@@ -803,11 +908,19 @@ class GreencubeCoolingApiController(http.Controller):
     @http.route(f"{BASE}/calculations/<int:job_id>", type="http", auth="user", methods=["GET"], csrf=False)
     @_guarded
     def get_calculation(self, job_id, **kwargs):
-        result = request.env["greencube.cooling.result"].browse(job_id)
-        if not result.exists():
+        job = request.env["greencube.cooling.calculation.job"].browse(job_id)
+        if not job.exists():
             return _error("COOLING_JOB_NOT_FOUND", "Calculation job not found.", status=404, section="results")
         return _json_response(
-            {"data": {"job_id": result.id, "status": "completed", "result_id": result.id}}
+            {
+                "data": {
+                    "job_id": job.id,
+                    "status": job.status,
+                    "result_id": job.result_id.id if job.result_id else None,
+                    "energyplus_processing_status": job.energyplus_processing_status,
+                    "error_message": job.error_message or None,
+                }
+            }
         )
 
     # ------------------------------------------------------------------
@@ -878,22 +991,7 @@ class GreencubeCoolingApiController(http.Controller):
         study = request.env["greencube.cooling.study"].browse(study_id)
         if not study.exists():
             return _error("COOLING_STUDY_NOT_FOUND", "Study not found.", status=404, section="studies")
-        return _json_response(
-            {
-                "data": [
-                    {
-                        "id": s.id,
-                        "product_id": s.product_id.id,
-                        "product_name": s.product_id.name,
-                        "compatibility_status": s.compatibility_status,
-                        "state": s.state,
-                        "result_id": s.result_id.id,
-                        "created_at": s.create_date.isoformat() if s.create_date else None,
-                    }
-                    for s in study.equipment_selection_ids
-                ]
-            }
-        )
+        return _json_response({"data": [_serialize_equipment_selection(s) for s in study.equipment_selection_ids]})
 
     @http.route(f"{BASE}/studies/<int:study_id>/equipment-selections", type="http", auth="user", methods=["POST"], csrf=False)
     @_guarded
@@ -939,16 +1037,19 @@ class GreencubeCoolingApiController(http.Controller):
                 "compatibility_status": assessment.status,
                 "state": "selected",
                 "price": product.list_price,
+                # Frozen at selection time — audit P1-08: without this, a
+                # historical selection would silently reflect today's
+                # catalog data (name/specs can change or be archived) rather
+                # than what was actually assessed when chosen.
+                "product_name": product.name,
+                "capacity_at_45c_w": product.capacity_at_45c_w,
+                "max_outdoor_temperature_c": product.max_outdoor_temperature_c,
+                "shr": product.cooling_shr,
+                "eer": product.eer,
+                "nominal_capacity_w": product.nominal_capacity_w,
             }
         )
         return _json_response(
-            {
-                "data": {
-                    "id": selection.id,
-                    "product_id": product.id,
-                    "compatibility_status": selection.compatibility_status,
-                    "state": selection.state,
-                }
-            },
+            {"data": _serialize_equipment_selection(selection)},
             status=201,
         )

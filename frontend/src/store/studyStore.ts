@@ -9,6 +9,10 @@ interface StudyStoreState {
   markStepComplete: (id: string, step: WizardStepId) => void;
   getStudy: (id: string) => StudyDraft | undefined;
   findByBackendId: (backendId: number) => StudyDraft | undefined;
+  /** Records a successful backend sync WITHOUT bumping `updatedAt` — unlike
+   * updateStudy, this must not itself mark the draft dirty again, or every
+   * autosave would immediately re-trigger another autosave. */
+  markSynced: (id: string, syncedAt: string) => void;
 }
 
 export const useStudyStore = create<StudyStoreState>()(
@@ -45,6 +49,13 @@ export const useStudyStore = create<StudyStoreState>()(
       },
       getStudy: (id) => get().studies[id],
       findByBackendId: (backendId) => Object.values(get().studies).find((s) => s.backendId === backendId),
+      markSynced: (id, syncedAt) => {
+        set((state) => {
+          const existing = state.studies[id];
+          if (!existing) return state;
+          return { studies: { ...state.studies, [id]: { ...existing, lastSyncedAt: syncedAt } } };
+        });
+      },
     }),
     { name: 'gc-cooling-studies' },
   ),
@@ -58,4 +69,25 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   helpOpen: false,
   toggleHelp: () => set((state) => ({ helpOpen: !state.helpOpen })),
+}));
+
+/**
+ * Transient (non-persisted) autosave status per study id. Deliberately
+ * separate from studyStore: "currently saving" or "last save failed" are
+ * facts about this browser tab's in-flight request, not durable draft
+ * content — persisting them would show a stale "Erreur" banner after a
+ * reload even though nothing is actually wrong anymore.
+ */
+interface SyncStatusState {
+  saving: Record<string, boolean>;
+  errors: Record<string, string | null>;
+  setSaving: (id: string, saving: boolean) => void;
+  setError: (id: string, message: string | null) => void;
+}
+
+export const useSyncStatusStore = create<SyncStatusState>((set) => ({
+  saving: {},
+  errors: {},
+  setSaving: (id, saving) => set((state) => ({ saving: { ...state.saving, [id]: saving } })),
+  setError: (id, message) => set((state) => ({ errors: { ...state.errors, [id]: message } })),
 }));

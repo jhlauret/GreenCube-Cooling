@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import base64
 import hashlib
 import json
 import logging
@@ -8,9 +9,10 @@ from odoo import api, fields, models
 from odoo.exceptions import UserError, ValidationError
 
 from ..services.climate import ClimateServiceError, radiation_wm2_from_daily_sum
-from ..services.energyplus import EnergyPlusSimulationError, EnergyPlusUnavailableError, run_energyplus_simulation
+from ..services.energyplus import is_energyplus_enabled
 from ..services.mercure import schemas as ms
 from ..services.mercure.engine import MercureError, run_mercure
+from ..services.mercure.honeybee_translator import HoneybeeTranslationError, build_honeybee_model
 from ..services.mercure.serialization import mercure_input_from_dict, mercure_input_to_dict
 
 _logger = logging.getLogger(__name__)
@@ -83,6 +85,24 @@ class GreencubeCoolingStudy(models.Model):
         ]
     )
     climate_confirmed = fields.Boolean(default=False)
+
+    main_orientation = fields.Selection(
+        [
+            ("north", "North"),
+            ("north_east", "North-East"),
+            ("east", "East"),
+            ("south_east", "South-East"),
+            ("south", "South"),
+            ("south_west", "South-West"),
+            ("west", "West"),
+            ("north_west", "North-West"),
+        ],
+        help="Compass orientation of the GreenCube's primary (front) facade. "
+        "Used to rotate the four nominal facade slots (front/back/left/right) into "
+        "real compass orientations on greencube.thermal.facade — stored on the study, "
+        "not derived from the facades, since the rotation is otherwise not reversible "
+        "(GC-COOLING-09 pt.2).",
+    )
 
     cooling_setpoint_c = fields.Float(default=25.0)
     night_setpoint_offset_c = fields.Float(default=1.0, help="Allowed night setpoint rise above the day setpoint.")
@@ -660,11 +680,19 @@ class GreencubeCoolingStudy(models.Model):
         """engine: None keeps the active snapshot's requested engine
         (default quick_solver); pass "quick_solver", "energyplus" or "both"
         to (re)snapshot with that choice first. Only MERCURE (quick_solver)
-        actually produces the persisted numeric result today — energyplus/
-        both attempt a real Honeybee/EnergyPlus run (GC-COOLING-15) and, if
-        the simulation stack isn't installed on this server, fall back to
-        the MERCURE number with an explicit warning rather than fabricating
-        an EnergyPlus figure.
+        actually produces the persisted numeric result today. If the
+        snapshot requests energyplus/both, a real (Honeybee-shaped, tested,
+        checksummed) geometry translation is attempted inline — see
+        services/mercure/honeybee_translator.py — and stored as a
+        simulation.artifact, but the actual EnergyPlus *simulation* is never
+        run from this web request: that stays behind
+        GC_COOLING_ENERGYPLUS_ENABLED and is the job of the cron-driven
+        worker (GC-COOLING-15), never fabricated here.
+
+        Every call creates a greencube.cooling.calculation.job row: this is
+        what the API's job_id refers to (not a result id standing in for
+        one), giving each calculation a real, queryable, serializable
+        record independent of whether it produced a result.
         """
         self.ensure_one()
         if idempotency_key:
@@ -680,30 +708,35 @@ class GreencubeCoolingStudy(models.Model):
         snapshot = self.active_snapshot_id
         self.state = "calculating"
         started_at = time.monotonic()
+
+        job = self.env["greencube.cooling.calculation.job"].create(
+            {
+                "study_id": self.id,
+                "snapshot_id": snapshot.id,
+                "requested_engine": snapshot.requested_engine,
+                "status": "running",
+                "started_at": fields.Datetime.now(),
+                "idempotency_key": idempotency_key or None,
+            }
+        )
+
         try:
             mercure_input = mercure_input_from_dict(json.loads(snapshot.payload_json))
             result = run_mercure(mercure_input)
         except (MercureError, UserError) as exc:
             self.state = "failed"
+            job.write(
+                {"status": "failed", "error_message": str(exc)[:255], "finished_at": fields.Datetime.now()}
+            )
             raise UserError(f"MERCURE calculation failed: {exc}") from exc
 
         result_state = "success"
         energyplus_warnings = []
         if snapshot.requested_engine in ("energyplus", "both"):
-            try:
-                run_energyplus_simulation(mercure_input)
-            except EnergyPlusUnavailableError as exc:
-                energyplus_warnings.append(
-                    {"code": "ENERGYPLUS_UNAVAILABLE", "message": str(exc), "severity": "warning"}
-                )
-                if snapshot.requested_engine == "energyplus":
-                    result_state = "partial"
-            except EnergyPlusSimulationError as exc:
-                energyplus_warnings.append(
-                    {"code": "ENERGYPLUS_NOT_IMPLEMENTED", "message": str(exc), "severity": "warning"}
-                )
-                if snapshot.requested_engine == "energyplus":
-                    result_state = "partial"
+            energyplus_warnings, energyplus_status, result_state = self._process_energyplus_translation(
+                job, mercure_input, snapshot.requested_engine, result_state
+            )
+            job.write({"energyplus_processing_status": energyplus_status})
 
         duration_ms = int((time.monotonic() - started_at) * 1000)
         solver_version = self.env["greencube.cooling.solver.version"].search(
@@ -758,4 +791,74 @@ class GreencubeCoolingStudy(models.Model):
                 "confidence_score": result.confidence_score,
             }
         )
+        job.write(
+            {
+                "status": "completed",
+                "result_id": result_record.id,
+                "finished_at": fields.Datetime.now(),
+                "duration_ms": duration_ms,
+            }
+        )
         return result_record
+
+    def _process_energyplus_translation(self, job, mercure_input, requested_engine, result_state):
+        """Attempts the (real, tested) Honeybee JSON translation inline —
+        cheap, pure-Python, no subprocess. Never calls
+        services.energyplus.run_energyplus_simulation: that function
+        touches the actual EnergyPlus binary and is reserved for the
+        cron-driven worker (GC-COOLING-15's isolation requirement), never
+        the HTTP request path. Returns (warnings, energyplus_processing_status, result_state)."""
+        self.ensure_one()
+        warnings = []
+        if not is_energyplus_enabled():
+            warnings.append(
+                {
+                    "code": "ENERGYPLUS_DISABLED",
+                    "message": "EnergyPlus is disabled on this server (set GC_COOLING_ENERGYPLUS_ENABLED=true "
+                    "to enable Honeybee translation).",
+                    "severity": "warning",
+                }
+            )
+            if requested_engine == "energyplus":
+                result_state = "partial"
+            return warnings, "disabled", result_state
+
+        try:
+            honeybee_model, diagnostics = build_honeybee_model(mercure_input)
+        except HoneybeeTranslationError as exc:
+            warnings.append(
+                {"code": "ENERGYPLUS_TRANSLATION_FAILED", "message": str(exc), "severity": "warning"}
+            )
+            if requested_engine == "energyplus":
+                result_state = "partial"
+            return warnings, "translation_failed", result_state
+
+        attachment = self.env["ir.attachment"].create(
+            {
+                "name": f"honeybee-model-job-{job.id}.json",
+                "type": "binary",
+                "datas": base64.b64encode(json.dumps(honeybee_model).encode("utf-8")),
+                "mimetype": "application/json",
+                "res_model": "greencube.cooling.calculation.job",
+                "res_id": job.id,
+            }
+        )
+        self.env["greencube.cooling.simulation.artifact"].create(
+            {
+                "job_id": job.id,
+                "artifact_type": "honeybee_json",
+                "checksum_sha256": diagnostics.checksum_sha256,
+                "attachment_id": attachment.id,
+            }
+        )
+        warnings.append(
+            {
+                "code": "ENERGYPLUS_QUEUED",
+                "message": "Honeybee model translated and stored. The EnergyPlus simulation itself is queued "
+                "for the worker (not run inline) — its outcome is not yet known.",
+                "severity": "info",
+            }
+        )
+        if requested_engine == "energyplus":
+            result_state = "partial"
+        return warnings, "queued_for_worker", result_state
