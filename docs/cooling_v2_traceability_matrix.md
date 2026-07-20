@@ -70,7 +70,7 @@ base de test `greencube_test_20260720` supprimée. Le service `odoo.service` de 
 | 14 — MERCURE canonique | Statu quo, documenté | `services/mercure/engine.py` (canonique) vs `frontend/src/mercure/engine.ts` (référence, non appelé en prod — confirmé par grep, aucun import) | `tests/test_mercure_engine.py` (13), `frontend/src/mercure/engine.test.ts` (13) | **Oui** (les deux, + réellement rejoué sous le vrai test-runner Odoo cette session) |
 | 15 — Worker EnergyPlus | Partiel — isolation réelle : cron in-process supprimé, remplacé par `energyplus_worker/` (processus autonome, aucun accès direct PostgreSQL), routes `POST /energyplus-jobs/claim` et `POST /energyplus-jobs/<id>/complete` authentifiées par secret partagé | `models/calculation_job.py` (`_claim_next_for_worker`, `_complete_from_worker`), `controllers/api.py`, `energyplus_worker/worker.py`, `migrations/18.0.3.0.0/post-migrate.py` | `energyplus_worker/test_worker.py` (12 tests) | **Oui, intégralement** — le vrai `energyplus_worker/worker.py --once` a été lancé contre un vrai serveur Odoo (port dédié), a réellement réclamé un job créé via l'API, réellement échoué sur `EnergyPlusUnavailableError` (stack absent, honnête), et réellement rapporté `simulation_unavailable` via `/complete`. Seule l'exécution EnergyPlus elle-même reste impossible (aucun binaire, par design) |
 | 16 — Résultats/recommandation | Traité | `POST /calculations` → job → `GET /results/<id>` | `tests/test_http_api.py::test_full_wizard_flow_as_standard_user` | **Oui** — flux complet rejoué deux fois (suite automatisée + script HTTP manuel), résultat MERCURE réel avec breakdown complet obtenu |
-| 17 — Consolidation CI/recette | Partiel | ce document | — | **Aucun CI n'existe dans ce dépôt** (`find . -path "*/.github/*"` : vide) — une version antérieure de ce document citait à tort `.github/workflows/ci.yml` comme preuve ; corrigé ici. Pas de Docker/backup/rollback/healthchecks |
+| 17 — Consolidation CI/recette | Partiel — CI ajouté cette session | `.github/workflows/ci.yml` (3 jobs : frontend, python-pure, backend-odoo) | Job `backend-odoo` : image officielle `odoo:18.0` + `postgres:15`, reproduit exactement la commande d'installation/test vérifiée manuellement | **Oui — les 3 jobs ont été rejoués localement avec Docker avant d'écrire ce commit**, pas seulement une YAML plausible non testée : job `backend-odoo` → 45 tests, 0 échec, 0 erreur (image `odoo:18.0` officielle + `postgres:15`, réseau isolé, nettoyé après coup) ; job `frontend` → lint/tsc/test/build déjà vérifiés dans les commits précédents ; job `python-pure` → suites déjà vérifiées. Reste non prouvé : le déclenchement réel sur l'infrastructure GitHub Actions elle-même (nécessite un `git push`, non fait dans cette session). Toujours pas de Docker Compose applicatif, backup/rollback, healthchecks |
 | 18 — Sélection équipement | Traité | `models/equipment_selection.py` (immuabilité + champs figés), `EquipmentSelectionPage.tsx` (historique) | — | Non — tri par `oversizing_ratio` toujours fait côté client, devrait être exclusivement backend |
 
 ## Ce que ça a impliqué concrètement (pour reproduire)
@@ -92,8 +92,9 @@ base de test `greencube_test_20260720` supprimée. Le service `odoo.service` de 
 ## Ce qui reste non exécuté / prochaines étapes
 
 Dans l'ordre de valeur/risque restant :
-1. Mettre en place un vrai CI (le point le plus proche d'un vrai gain : ce qui vient d'être fait
-   manuellement dans cette session devrait tourner automatiquement à chaque commit).
+1. ~~Mettre en place un vrai CI~~ — fait : `.github/workflows/ci.yml`, testé localement avec Docker (voir
+   ligne du lot 17). Reste à pousser sur GitHub pour avoir la première exécution réelle sur
+   l'infrastructure Actions elle-même.
 2. GC-COOLING-04/07 (climat historique, UI localisation) : lots antérieurs non retouchés, pas de suite de
    tests dédiée.
 3. Remplacer le catalogue d'équipements codé en dur (`EquipmentStep.tsx`) par un vrai catalogue Odoo
