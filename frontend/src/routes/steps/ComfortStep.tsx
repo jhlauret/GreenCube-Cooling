@@ -66,16 +66,27 @@ export function ComfortStep() {
           </Card>
 
           <Card title="Confort cible">
-            <div className="grid grid-cols-2 gap-4">
-              <LabeledText
-                label="Température intérieure cible (°C)"
-                value={comfort.targetTemperatureRange}
-                onChange={(v) => patch({ targetTemperatureRange: v })}
+            <div className="grid grid-cols-3 gap-4">
+              <LabeledNumber
+                label="Température cible (°C)"
+                value={comfort.targetTemperatureMinC}
+                min={10}
+                max={comfort.targetTemperatureMaxC}
+                onChange={(v) => patch({ targetTemperatureMinC: v })}
               />
-              <LabeledText
+              <LabeledNumber
+                label="Température maximale acceptable (°C)"
+                value={comfort.targetTemperatureMaxC}
+                min={comfort.targetTemperatureMinC}
+                max={40}
+                onChange={(v) => patch({ targetTemperatureMaxC: v })}
+              />
+              <LabeledNumber
                 label="Humidité relative cible (%)"
-                value={comfort.targetHumidityRange}
-                onChange={(v) => patch({ targetHumidityRange: v })}
+                value={comfort.targetHumidityPercent}
+                min={0}
+                max={100}
+                onChange={(v) => patch({ targetHumidityPercent: v })}
               />
             </div>
             <div className="mt-4 flex items-center justify-between">
@@ -128,7 +139,11 @@ export function ComfortStep() {
 
           <Card title="Synthèse des choix">
             <div className="grid grid-cols-3 gap-3">
-              <StatTile icon="🌡️" label="Température cible" value={`${comfort.targetTemperatureRange} °C`} />
+              <StatTile
+                icon="🌡️"
+                label="Température cible"
+                value={`${comfort.targetTemperatureMinC}–${comfort.targetTemperatureMaxC} °C`}
+              />
               <StatTile icon="💨" label="Débit d'air retenu" value={`${comfort.estimatedAirflowM3h} m³/h`} />
               <StatTile
                 icon="🛡️"
@@ -170,20 +185,6 @@ function LabeledNumber({
           const raw = Number(e.target.value);
           if (Number.isFinite(raw)) onChange(Math.min(max, Math.max(min, raw)));
         }}
-        className="rounded-lg border border-border px-3 py-2 text-sm text-ink outline-none focus:border-brand-500"
-      />
-    </label>
-  );
-}
-
-function LabeledText({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
-  return (
-    <label className="flex flex-col gap-1 text-xs text-ink-soft">
-      {label}
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
         className="rounded-lg border border-border px-3 py-2 text-sm text-ink outline-none focus:border-brand-500"
       />
     </label>

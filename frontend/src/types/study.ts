@@ -110,6 +110,10 @@ export interface UsageData {
 
 export interface EquipmentItem {
   id: string;
+  /** Odoo `greencube.cooling.equipment.load` id once this line has been
+   * synced at least once — lets syncStudy diff against the backend instead
+   * of deleting and recreating every line on every save (GC-COOLING-11). */
+  backendId?: number | null;
   label: string;
   category: 'it' | 'lighting' | 'appliance' | 'network' | 'other';
   quantity: number;
@@ -122,8 +126,18 @@ export interface EquipmentItem {
 export interface ComfortData {
   ventilationSystem: 'natural' | 'simple_flow' | 'double_flow' | 'dedicated_mechanical';
   estimatedAirflowM3h: number;
-  targetTemperatureRange: string;
-  targetHumidityRange: string;
+  /** Day setpoint (backend `cooling_setpoint_c`) — the target/ideal
+   * temperature, not just the low end of a display range. */
+  targetTemperatureMinC: number;
+  /** Max acceptable temperature before comfort is considered breached
+   * (backend `maximum_acceptable_temperature_c`). Both bounds are sent to
+   * MERCURE — previously only the upper bound reached the backend and the
+   * lower bound was silently dropped (GC-COOLING-12). */
+  targetTemperatureMaxC: number;
+  /** MERCURE only models a single humidity target, so this is a value, not
+   * a range — kept as one field to avoid implying a second bound that
+   * would never be used. */
+  targetHumidityPercent: number;
   usedAtNight: boolean;
   serviceLevel: 'standard' | 'enhanced' | 'heatwave_resilience';
 }
@@ -206,8 +220,9 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
     comfort: {
       ventilationSystem: 'simple_flow',
       estimatedAirflowM3h: 60,
-      targetTemperatureRange: '22-25',
-      targetHumidityRange: '45-60',
+      targetTemperatureMinC: 22,
+      targetTemperatureMaxC: 25,
+      targetHumidityPercent: 55,
       usedAtNight: false,
       serviceLevel: 'standard',
     },

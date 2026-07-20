@@ -13,7 +13,7 @@ const SOLAR_RADIATION_BY_ENVIRONMENT: Record<string, number> = {
   coastal: 400,
   rural: 420,
   suburban: 380,
-  urban_dense: 340,
+  dense_urban: 340,
   industrial: 360,
 };
 
@@ -141,10 +141,10 @@ export function mapStudyToMercureInput(study: StudyDraft): MercureInput {
       airChangesPerHour: study.model.airtightnessN50 * 0.05,
     },
     comfort: {
-      coolingSetpointDayC: Number(study.comfort.targetTemperatureRange.split('-')[1] ?? 25),
-      coolingSetpointNightC: Number(study.comfort.targetTemperatureRange.split('-')[1] ?? 26) + 1,
-      targetRelativeHumidityPercent: Number(study.comfort.targetHumidityRange.split('-')[1] ?? 55),
-      maximumAcceptableTemperatureC: 27,
+      coolingSetpointDayC: study.comfort.targetTemperatureMinC,
+      coolingSetpointNightC: study.comfort.targetTemperatureMinC + 1,
+      targetRelativeHumidityPercent: study.comfort.targetHumidityPercent,
+      maximumAcceptableTemperatureC: study.comfort.targetTemperatureMaxC,
     },
     marginFraction: study.comfort.serviceLevel === 'heatwave_resilience' ? 0.25 : study.comfort.serviceLevel === 'enhanced' ? 0.18 : 0.12,
   };

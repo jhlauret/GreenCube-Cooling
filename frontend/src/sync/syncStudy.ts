@@ -15,7 +15,9 @@ import {
   putShading,
   putThermalSpecification,
   putVentilationProfile,
+  updateEquipmentLoad,
 } from '../api/study';
+import { catalogIdForName } from '../equipment/internalLoadsCatalog';
 
 const USAGE_TYPE_MAP: Record<string, string> = {
   residential: 'housing',
@@ -107,12 +109,6 @@ export function facadeGrossAreaM2(facade: Facade, study: StudyDraft): number {
   return (facade === 'north' || facade === 'south' ? widthM : lengthM) * heightM;
 }
 
-function rangeUpperBound(range: string, fallback: number): number {
-  const parts = range.split('-');
-  const value = Number(parts[1] ?? parts[0]);
-  return Number.isFinite(value) ? value : fallback;
-}
-
 /**
  * Pushes the current local wizard draft to the Odoo backend, creating the
  * backend study on first sync. Called at explicit checkpoints (leaving a
@@ -122,6 +118,7 @@ function rangeUpperBound(range: string, fallback: number): number {
 export async function syncStudyToBackend(
   study: StudyDraft,
   onBackendId?: (id: number) => void,
+  onEquipmentSynced?: (equipment: EquipmentItem[]) => void,
 ): Promise<number> {
   let backendId = study.backendId;
   if (!backendId) {
@@ -140,8 +137,9 @@ export async function syncStudyToBackend(
     environment_type: study.location.environmentType,
     climate_confirmed: study.location.climateConfirmed,
     main_orientation: COMPASS_TO_BACKEND[study.orientation.mainOrientation],
-    cooling_setpoint_c: rangeUpperBound(study.comfort.targetTemperatureRange, 25),
-    target_humidity_percent: rangeUpperBound(study.comfort.targetHumidityRange, 55),
+    cooling_setpoint_c: study.comfort.targetTemperatureMinC,
+    maximum_acceptable_temperature_c: study.comfort.targetTemperatureMaxC,
+    target_humidity_percent: study.comfort.targetHumidityPercent,
     service_level: study.comfort.serviceLevel,
   });
 
@@ -216,32 +214,53 @@ export async function syncStudyToBackend(
       : [],
   );
 
-  await syncEquipment(backendId, study.equipment);
+  const syncedEquipment = await syncEquipment(backendId, study.equipment);
+  onEquipmentSynced?.(syncedEquipment);
 
   return backendId;
 }
 
 /**
- * The wizard only tracks a client-generated UUID per equipment line (no
- * backend id round-trips through the store), so lines can't be diffed
- * against the backend by identity. Full replace on every sync is simpler
- * and equally correct for the MVP's line counts (a handful of items).
+ * Diffs the wizard's equipment lines against the backend by `backendId`
+ * (set the first time a line is created) instead of deleting and
+ * recreating every line on every save — a full replace broke the audit
+ * trail and would race with concurrent edits (GC-COOLING-11, audit finding).
+ * Lines the backend has but the wizard no longer selects are deleted;
+ * existing lines are updated in place; new selections are created and
+ * their backendId is returned so the caller can persist it back into the
+ * local store (otherwise the next sync would treat them as new again).
  */
-async function syncEquipment(backendId: number, equipment: EquipmentItem[]) {
+async function syncEquipment(backendId: number, equipment: EquipmentItem[]): Promise<EquipmentItem[]> {
   const existing = await listEquipmentLoads(backendId);
+  const existingIds = new Set(existing.map((line) => line.id));
+  const selected = equipment.filter((e) => e.selected);
+  const keptBackendIds = new Set(selected.map((e) => e.backendId).filter((id): id is number => id != null));
+
   for (const line of existing) {
-    await deleteEquipmentLoad(line.id);
+    if (!keptBackendIds.has(line.id)) {
+      await deleteEquipmentLoad(line.id);
+    }
   }
-  for (const item of equipment.filter((e) => e.selected)) {
-    await createEquipmentLoad(backendId, {
+
+  const synced: EquipmentItem[] = [];
+  for (const item of selected) {
+    const vals = {
       name: item.label,
       category: item.category,
       quantity: item.quantity,
       unit_power_w: item.unitPowerW,
       usage_hours_per_day: item.usageHoursPerDay,
       simultaneity_percent: item.simultaneityPercent,
-    });
+    };
+    if (item.backendId != null && existingIds.has(item.backendId)) {
+      await updateEquipmentLoad(item.backendId, vals);
+      synced.push(item);
+    } else {
+      const created = await createEquipmentLoad(backendId, vals);
+      synced.push({ ...item, backendId: created.id });
+    }
   }
+  return [...synced, ...equipment.filter((e) => !e.selected)];
 }
 
 /**
@@ -293,6 +312,7 @@ export async function loadStudyFromBackend(backendId: number): Promise<Partial<S
 
   const comfort = study.comfort as {
     cooling_setpoint_c: number;
+    maximum_acceptable_temperature_c: number;
     target_humidity_percent: number;
     service_level: StudyDraft['comfort']['serviceLevel'];
   };
@@ -344,8 +364,9 @@ export async function loadStudyFromBackend(backendId: number): Promise<Partial<S
   patch.comfort = {
     ...empty.comfort,
     ...(patch.comfort ?? {}),
-    targetTemperatureRange: String(comfort.cooling_setpoint_c),
-    targetHumidityRange: String(comfort.target_humidity_percent),
+    targetTemperatureMinC: comfort.cooling_setpoint_c,
+    targetTemperatureMaxC: comfort.maximum_acceptable_temperature_c,
+    targetHumidityPercent: comfort.target_humidity_percent,
     serviceLevel: comfort.service_level,
   };
 
@@ -358,7 +379,11 @@ export async function loadStudyFromBackend(backendId: number): Promise<Partial<S
   }
 
   patch.equipment = equipment.map((line) => ({
-    id: crypto.randomUUID(),
+    // Matching the backend line's name back to a catalog id (rather than a
+    // fresh random id) is what lets EquipmentStep's checkboxes correctly
+    // show a reloaded study's selections as checked (GC-COOLING-11).
+    id: catalogIdForName(line.name) ?? crypto.randomUUID(),
+    backendId: line.id,
     label: line.name,
     category: line.category as EquipmentItem['category'],
     quantity: line.quantity,

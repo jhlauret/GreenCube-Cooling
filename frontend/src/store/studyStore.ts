@@ -13,6 +13,11 @@ interface StudyStoreState {
    * updateStudy, this must not itself mark the draft dirty again, or every
    * autosave would immediately re-trigger another autosave. */
   markSynced: (id: string, syncedAt: string) => void;
+  /** Same "don't bump updatedAt" rule as markSynced, for patches that only
+   * echo back backend-assigned ids (e.g. equipment line ids after a sync) —
+   * writing them via updateStudy would retrigger the autosave debounce
+   * forever, since it watches updatedAt (GC-COOLING-11). */
+  patchSilently: (id: string, patch: Partial<StudyDraft>) => void;
 }
 
 export const useStudyStore = create<StudyStoreState>()(
@@ -54,6 +59,13 @@ export const useStudyStore = create<StudyStoreState>()(
           const existing = state.studies[id];
           if (!existing) return state;
           return { studies: { ...state.studies, [id]: { ...existing, lastSyncedAt: syncedAt } } };
+        });
+      },
+      patchSilently: (id, patch) => {
+        set((state) => {
+          const existing = state.studies[id];
+          if (!existing) return state;
+          return { studies: { ...state.studies, [id]: { ...existing, ...patch } } };
         });
       },
     }),

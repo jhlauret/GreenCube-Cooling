@@ -105,6 +105,7 @@ def _serialize_study(study):
         "comfort": {
             "cooling_setpoint_c": study.cooling_setpoint_c,
             "night_setpoint_offset_c": study.night_setpoint_offset_c,
+            "maximum_acceptable_temperature_c": study.maximum_acceptable_temperature_c,
             "target_humidity_percent": study.target_humidity_percent,
             "service_level": study.service_level,
         },
@@ -408,6 +409,7 @@ class GreencubeCoolingApiController(http.Controller):
             "main_orientation",
             "cooling_setpoint_c",
             "night_setpoint_offset_c",
+            "maximum_acceptable_temperature_c",
             "target_humidity_percent",
             "service_level",
         }

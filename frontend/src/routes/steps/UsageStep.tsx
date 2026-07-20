@@ -25,8 +25,12 @@ export function UsageStep() {
   const { studyId, goToNext, goToPrevious } = useWizardNav('usage');
   const { usage } = study;
 
-  const sensibleW = usage.usualOccupants * 70;
-  const latentGH = usage.usualOccupants * 50;
+  // Matches occupancy_profile.py's sensible_gain_per_person_w/
+  // latent_gain_per_person_g_h defaults (75 W, 60 g/h) — this preview used
+  // to show 70/50, silently diverging from what the backend would actually
+  // use to size the study (GC-COOLING-10).
+  const sensibleW = usage.usualOccupants * 75;
+  const latentGH = usage.usualOccupants * 60;
   const totalKw = (sensibleW + latentGH * 0.68) / 1000;
 
   return (

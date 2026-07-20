@@ -104,8 +104,13 @@ class GreencubeCoolingStudy(models.Model):
         "(GC-COOLING-09 pt.2).",
     )
 
-    cooling_setpoint_c = fields.Float(default=25.0)
+    cooling_setpoint_c = fields.Float(default=22.0)
     night_setpoint_offset_c = fields.Float(default=1.0, help="Allowed night setpoint rise above the day setpoint.")
+    maximum_acceptable_temperature_c = fields.Float(
+        default=25.0,
+        help="Upper bound of the comfort band before it is considered breached. Previously hardcoded as "
+        "cooling_setpoint_c + 2 and never settable by the user (GC-COOLING-12).",
+    )
     target_humidity_percent = fields.Float(default=55.0)
     service_level = fields.Selection(
         [
@@ -116,6 +121,14 @@ class GreencubeCoolingStudy(models.Model):
         default="standard",
         tracking=True,
     )
+
+    @api.constrains("cooling_setpoint_c", "maximum_acceptable_temperature_c")
+    def _check_comfort_temperature_band(self):
+        for study in self:
+            if study.maximum_acceptable_temperature_c < study.cooling_setpoint_c:
+                raise ValidationError(
+                    "maximum_acceptable_temperature_c must be greater than or equal to cooling_setpoint_c."
+                )
 
     occupancy_profile_ids = fields.One2many("greencube.cooling.occupancy.profile", "study_id")
     equipment_load_ids = fields.One2many("greencube.cooling.equipment.load", "study_id")
@@ -631,7 +644,7 @@ class GreencubeCoolingStudy(models.Model):
                 cooling_setpoint_day_c=self.cooling_setpoint_c,
                 cooling_setpoint_night_c=self.cooling_setpoint_c + self.night_setpoint_offset_c,
                 target_relative_humidity_percent=self.target_humidity_percent,
-                maximum_acceptable_temperature_c=self.cooling_setpoint_c + 2,
+                maximum_acceptable_temperature_c=self.maximum_acceptable_temperature_c,
             ),
             margin_fraction=SERVICE_LEVEL_MARGIN.get(self.service_level, 0.12),
         )

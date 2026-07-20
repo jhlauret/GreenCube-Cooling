@@ -32,6 +32,7 @@ const PROVENANCE_DISPLAY: Record<string, { label: string; tone: 'brand' | 'warn'
 export function ReviewStep() {
   const { study } = useOutletContext<{ study: StudyDraft }>();
   const { goToPrevious } = useWizardNav('review');
+  const patchSilently = useStudyStore((state) => state.patchSilently);
   const updateStudy = useStudyStore((state) => state.updateStudy);
   const navigate = useNavigate();
 
@@ -48,7 +49,11 @@ export function ReviewStep() {
       setLoading(true);
       setSyncError(null);
       try {
-        const backendId = await syncStudyToBackend(study, (id) => updateStudy(study.id, { backendId: id }));
+        const backendId = await syncStudyToBackend(
+          study,
+          (id) => patchSilently(study.id, { backendId: id }),
+          (equipment) => patchSilently(study.id, { equipment }),
+        );
         const [report, summary] = await Promise.all([getValidation(backendId), getStudy(backendId)]);
         if (!cancelled) {
           setValidation(report);
@@ -124,7 +129,11 @@ export function ReviewStep() {
     setCalculating(true);
     setSyncError(null);
     try {
-      const backendId = await syncStudyToBackend(study, (id) => updateStudy(study.id, { backendId: id }));
+      const backendId = await syncStudyToBackend(
+        study,
+        (id) => patchSilently(study.id, { backendId: id }),
+        (equipment) => patchSilently(study.id, { equipment }),
+      );
       const idempotencyKey = crypto.randomUUID();
       const job = await calculate(backendId, idempotencyKey);
       navigate(`/cooling/studies/${study.id}/results`, { state: { resultId: job.result_id } });
@@ -245,8 +254,11 @@ export function ReviewStep() {
         </ReviewCard>
 
         <ReviewCard title="Confort" estimated>
-          <ReviewRow label="Température" value={`${study.comfort.targetTemperatureRange} °C`} />
-          <ReviewRow label="Humidité" value={`${study.comfort.targetHumidityRange} %`} />
+          <ReviewRow
+            label="Température"
+            value={`${study.comfort.targetTemperatureMinC}–${study.comfort.targetTemperatureMaxC} °C`}
+          />
+          <ReviewRow label="Humidité" value={`${study.comfort.targetHumidityPercent} %`} />
           <ReviewRow label="Niveau de service" value={study.comfort.serviceLevel} />
         </ReviewCard>
 

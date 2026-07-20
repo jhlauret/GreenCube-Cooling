@@ -16,8 +16,8 @@ const DEBOUNCE_MS = 1500;
  * via useSyncStatusStore + StudyDraft.lastSyncedAt (audit P0-04/GC-COOLING-06 pt.6).
  */
 export function useAutosave(study: StudyDraft) {
-  const updateStudy = useStudyStore((state) => state.updateStudy);
   const markSynced = useStudyStore((state) => state.markSynced);
+  const patchSilently = useStudyStore((state) => state.patchSilently);
   const setSaving = useSyncStatusStore((state) => state.setSaving);
   const setError = useSyncStatusStore((state) => state.setError);
 
@@ -54,7 +54,11 @@ export function useAutosave(study: StudyDraft) {
     try {
       const latest = useStudyStore.getState().studies[study.id];
       if (!latest) return;
-      const backendId = await syncStudyToBackend(latest, (id) => updateStudy(latest.id, { backendId: id }));
+      const backendId = await syncStudyToBackend(
+        latest,
+        (id) => patchSilently(latest.id, { backendId: id }),
+        (equipment) => patchSilently(latest.id, { equipment }),
+      );
       markSynced(latest.id, new Date().toISOString());
       void backendId;
     } catch (err) {
