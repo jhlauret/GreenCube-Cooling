@@ -32,6 +32,37 @@ export type EnvironmentType =
   | 'coastal'
   | 'industrial';
 
+export type LocationProvenance = 'manual' | 'geocoded' | 'browser' | 'imported';
+export type LocationPrecision = 'exact' | 'locality' | 'region' | 'country' | 'unknown';
+
+export type ClimateScenarioType = 'reference_summer' | 'hot_weather' | 'prolonged_heatwave';
+
+/**
+ * Mirrors the backend's `_serialize_climate_scenario()` (GC-COOLING-04).
+ * Populated only after the study has gone through at least one
+ * action_calculate()/create_snapshot() run — empty before that, which the
+ * UI must render as "not computed yet", never as an error.
+ */
+export interface ClimateScenarioData {
+  id: number;
+  scenarioType: ClimateScenarioType;
+  outdoorTemperatureC: number;
+  relativeHumidityPercent: number;
+  solarRadiationWm2: number;
+  windSpeedMs: number;
+  provenance: string;
+  datasetType: string | null;
+  checksum: string | null;
+  referenceDate: string | null;
+  dataStart: string | null;
+  dataEnd: string | null;
+  sampleDays: number | null;
+  providerCode: string | null;
+  providerVersion: string | null;
+  timezone: string | null;
+  license: string | null;
+}
+
 export interface LocationData {
   address: string;
   city: string | null;
@@ -41,6 +72,18 @@ export interface LocationData {
   altitudeM: number | null;
   environmentType: EnvironmentType | null;
   climateConfirmed: boolean;
+  /**
+   * How the current coordinates were obtained (GC-COOLING-03). Set by the
+   * backend when POST /studies/:id/confirm-location succeeds — never
+   * written directly by the UI, so a stale local guess can't masquerade as
+   * a confirmed provenance.
+   */
+  locationProvenance: LocationProvenance | null;
+  locationPrecision: LocationPrecision | null;
+  locationProvider: string | null;
+  locationResolvedAt: string | null;
+  /** Empty until a calculation has run at least once — see ClimateScenarioData. */
+  climateScenarios: ClimateScenarioData[];
 }
 
 export type GreenCubeModelCode = 'studio' | 'office' | 'living' | 'commerce' | 'custom';
@@ -62,7 +105,18 @@ export interface ModelData {
   wallComposition: string;
   insulationMm: number;
   glazingType: string;
+  /** Wall U-value, W/m².K. */
   uValueWm2k: number;
+  /**
+   * Roof and floor U-values, W/m².K. Kept as their own fields (not derived
+   * from uValueWm2k via a fixed ratio) so a catalog model's real envelope
+   * performance is preserved end to end, and so "Personnalisé" can set each
+   * independently — GC-COOLING-08 explicitly requires wall/roof/floor to be
+   * distinct, traceable values, not a single average multiplied by a
+   * hardcoded constant.
+   */
+  roofUValueWm2k: number;
+  floorUValueWm2k: number;
   airtightnessN50: number;
 }
 
@@ -98,10 +152,25 @@ export type UsageType =
   | 'server_room'
   | 'other';
 
+export type Weekday = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
+
+export const WEEKDAYS: Weekday[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
 export interface UsageData {
   usageType: UsageType;
   usualOccupants: number;
   maximumOccupants: number;
+  /**
+   * Structured weekly calendar (GC-COOLING-10) — the actual source of
+   * truth sent to the backend's active_<weekday> boolean fields. Replaces
+   * the previous plan of storing the schedule as free text: a string like
+   * "Lun-Ven" can't be validated or safely consumed by the solver, and
+   * (before this fix) `occupiedDays` was never even exposed in the UI —
+   * days were only ever silently carried through at their default value.
+   */
+  occupiedWeekdays: Record<Weekday, boolean>;
+  /** @deprecated Legacy display-only summary kept for backend round-trip
+   * compatibility (backend `usage_days`); `occupiedWeekdays` is authoritative. */
   occupiedDays: string;
   activityLevel: 'low' | 'moderate' | 'high';
   occupancyStartHour: number;
@@ -114,8 +183,17 @@ export interface EquipmentItem {
    * synced at least once — lets syncStudy diff against the backend instead
    * of deleting and recreating every line on every save (GC-COOLING-11). */
   backendId?: number | null;
+  /** Odoo `product.template` id of the catalog entry this line was added
+   * from, or `null`/absent for a fully custom line. Used to match a
+   * reloaded backend line back to its catalog card by identity instead of
+   * by (possibly edited/translated) name (GC-COOLING-11). */
+  productId?: number | null;
   label: string;
-  category: 'it' | 'lighting' | 'appliance' | 'network' | 'other';
+  /** Mirrors the backend `greencube.cooling.equipment.load.category`
+   * Selection exactly (GC-COOLING-11) — widened from a 5-value subset so
+   * catalog entries like batteries/UPS can carry their real category
+   * instead of being folded into 'other'. */
+  category: 'it' | 'lighting' | 'appliance' | 'kitchen' | 'network' | 'battery' | 'inverter' | 'medical' | 'machine' | 'other';
   quantity: number;
   unitPowerW: number;
   usageHoursPerDay: number;
@@ -126,6 +204,19 @@ export interface EquipmentItem {
 export interface ComfortData {
   ventilationSystem: 'natural' | 'simple_flow' | 'double_flow' | 'dedicated_mechanical';
   estimatedAirflowM3h: number;
+  /** Real user input, no longer inferred from ventilationSystem (GC-COOLING-12:
+   * the backend used to receive a hardcoded 75%/0% guess instead of what the
+   * user actually has installed). Meaningful mainly for double_flow/dedicated
+   * systems; 0 for natural/simple_flow. */
+  heatRecoveryEfficiencyPercent: number;
+  /** Real user input, no longer inferred from ventilationSystem (same
+   * GC-COOLING-12 gap as heatRecoveryEfficiencyPercent). */
+  fanPowerW: number;
+  /** Stored on the ventilation profile and actually used by the backend's
+   * get_effective_infiltration_ach() (door/window opening was previously
+   * displayed nowhere in the UI and had zero effect on the calculation). */
+  doorOpeningFrequency: 'rare' | 'occasional' | 'frequent' | 'continuous';
+  windowOpeningFrequency: 'rare' | 'occasional' | 'frequent' | 'continuous';
   /** Day setpoint (backend `cooling_setpoint_c`) — the target/ideal
    * temperature, not just the low end of a display range. */
   targetTemperatureMinC: number;
@@ -152,6 +243,13 @@ export interface StudyDraft {
    * compared against `updatedAt` to derive the dirty/clean sync status
    * shown in AppHeader (audit P0-04's "cache de brouillon contrôlé"). */
   lastSyncedAt: string | null;
+  /**
+   * Backend `write_date` (ISO) as of the last successful sync — sent back
+   * as the `If-Match` header on the next PATCH so the controller can detect
+   * a concurrent edit from another tab/user and answer 409 instead of one
+   * writer silently overwriting the other (GC-COOLING-06 §17).
+   */
+  backendUpdatedAt: string | null;
   status: 'draft' | 'ready' | 'calculated';
   location: LocationData;
   model: ModelData;
@@ -169,6 +267,7 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
     id,
     backendId: null,
     lastSyncedAt: null,
+    backendUpdatedAt: null,
     name,
     createdAt: now,
     updatedAt: now,
@@ -182,6 +281,11 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
       altitudeM: null,
       environmentType: null,
       climateConfirmed: false,
+      locationProvenance: null,
+      locationPrecision: null,
+      locationProvider: null,
+      locationResolvedAt: null,
+      climateScenarios: [],
     },
     model: {
       modelCode: 'studio',
@@ -194,6 +298,8 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
       insulationMm: 120,
       glazingType: 'Double vitrage low-E',
       uValueWm2k: 0.18,
+      roofUValueWm2k: 0.16,
+      floorUValueWm2k: 0.2,
       airtightnessN50: 0.6,
     },
     orientation: {
@@ -210,6 +316,15 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
       usageType: 'office',
       usualOccupants: 2,
       maximumOccupants: 4,
+      occupiedWeekdays: {
+        monday: true,
+        tuesday: true,
+        wednesday: true,
+        thursday: true,
+        friday: true,
+        saturday: false,
+        sunday: false,
+      },
       occupiedDays: 'Lun-Ven',
       activityLevel: 'moderate',
       occupancyStartHour: 8,
@@ -220,6 +335,10 @@ export function createEmptyStudyDraft(id: string, name: string): StudyDraft {
     comfort: {
       ventilationSystem: 'simple_flow',
       estimatedAirflowM3h: 60,
+      heatRecoveryEfficiencyPercent: 0,
+      fanPowerW: 30,
+      doorOpeningFrequency: 'occasional',
+      windowOpeningFrequency: 'occasional',
       targetTemperatureMinC: 22,
       targetTemperatureMaxC: 25,
       targetHumidityPercent: 55,

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import time
+import zoneinfo
 
 from odoo import api, fields, models
 from odoo.exceptions import UserError, ValidationError
@@ -11,11 +12,23 @@ from odoo.exceptions import UserError, ValidationError
 from ..services.climate import ClimateServiceError, radiation_wm2_from_daily_sum
 from ..services.energyplus import is_energyplus_enabled
 from ..services.mercure import schemas as ms
+from ..services.mercure.conversions import ach_from_n50
 from ..services.mercure.engine import MercureError, run_mercure
 from ..services.mercure.honeybee_translator import HoneybeeTranslationError, build_honeybee_model
 from ..services.mercure.serialization import mercure_input_from_dict, mercure_input_to_dict
 
 _logger = logging.getLogger(__name__)
+
+
+class CoolingIdempotencyConflict(UserError):
+    """Raised when an Idempotency-Key is replayed against a study whose
+    inputs changed since that key was first used (GC-COOLING-02 §13: same
+    key + different payload -> 409 IDEMPOTENCY_CONFLICT, never a silent
+    recompute nor a silent return of the stale result). Kept as a UserError
+    subclass so any caller that only expects UserError still catches it,
+    while controllers/api.py can catch it specifically first to map it to
+    409 instead of the generic 422 used for other calculation failures."""
+
 
 NON_CONFIRMED_PROVENANCES = ("estimated_reference", "estimated_manual", "missing_fallback")
 
@@ -55,10 +68,10 @@ class GreencubeCoolingStudy(models.Model):
     name = fields.Char(required=True, tracking=True, default="New study")
     reference = fields.Char(readonly=True, copy=False, index=True)
     partner_id = fields.Many2one("res.partner", tracking=True)
-    user_id = fields.Many2one("res.users", default=lambda self: self.env.user, tracking=True)
+    user_id = fields.Many2one("res.users", default=lambda self: self.env.user, tracking=True, index=True)
     company_id = fields.Many2one("res.company", required=True, default=lambda self: self.env.company, index=True)
 
-    state = fields.Selection(STATES, default="draft", required=True, tracking=True)
+    state = fields.Selection(STATES, default="draft", required=True, tracking=True, index=True)
     revision_number = fields.Integer(default=1, readonly=True)
     parent_study_id = fields.Many2one("greencube.cooling.study", readonly=True, index=True)
     root_study_id = fields.Many2one("greencube.cooling.study", readonly=True, index=True)
@@ -85,6 +98,57 @@ class GreencubeCoolingStudy(models.Model):
         ]
     )
     climate_confirmed = fields.Boolean(default=False)
+
+    # ------------------------------------------------------------------
+    # GC-COOLING-03: provenance, precision and auditability of the
+    # location. No separate `greencube.location` model is introduced —
+    # see docs/geolocation.md "Décision d'architecture: pas de modèle
+    # séparé" for the rationale (the study is still the only object that
+    # ever holds a location in this MVP; a single field set below is
+    # cheaper to keep consistent than a one-to-one child model would be,
+    # and every current consumer — API serializer, frontend, MERCURE
+    # translator — already reads location data straight off the study).
+    # ------------------------------------------------------------------
+    location_provenance = fields.Selection(
+        [
+            ("manual", "Manual entry"),
+            ("geocoded", "Geocoding provider"),
+            ("browser", "Browser geolocation"),
+            ("imported", "Imported / legacy data"),
+        ],
+        default="manual",
+        tracking=True,
+        help="How the current latitude/longitude/altitude/timezone were obtained. "
+        "Set exclusively by action_confirm_geolocation(); a plain PATCH of the "
+        "raw fields (e.g. programmatic import) leaves it untouched.",
+    )
+    location_precision = fields.Selection(
+        [
+            ("exact", "Exact (GPS / rooftop)"),
+            ("locality", "Locality"),
+            ("region", "Region"),
+            ("country", "Country"),
+            ("unknown", "Unknown"),
+        ],
+        default="unknown",
+        help="Coarseness of the resolved coordinates, as reported by the geocoding "
+        "provider or asserted by the user for a manual entry.",
+    )
+    location_provider = fields.Char(
+        help="Name of the geocoding/altitude/timezone provider that produced the "
+        "currently-stored values (e.g. 'open-meteo'), or empty for a manual entry."
+    )
+    location_resolved_at = fields.Datetime(
+        readonly=True,
+        help="When the current location was last confirmed via action_confirm_geolocation().",
+    )
+    location_source_json = fields.Text(
+        readonly=True,
+        copy=False,
+        help="Minimal, auditable subset of the provider response used to confirm this "
+        "location (display label, city, country code, confidence) — never the full "
+        "raw provider payload, and never logged (GC-COOLING-03 §10/§24).",
+    )
 
     main_orientation = fields.Selection(
         [
@@ -128,6 +192,32 @@ class GreencubeCoolingStudy(models.Model):
             if study.maximum_acceptable_temperature_c < study.cooling_setpoint_c:
                 raise ValidationError(
                     "maximum_acceptable_temperature_c must be greater than or equal to cooling_setpoint_c."
+                )
+
+    @api.constrains("latitude", "longitude", "altitude_m", "timezone")
+    def _check_location_bounds(self):
+        """Defense-in-depth mirror of controllers/api.py's `_range_error`
+        (services/api_validation.FIELD_LIMITS) at the ORM level, so any
+        write path that bypasses the HTTP controller — demo data, direct
+        ORM calls from another module, `odoo shell` — cannot store an
+        out-of-range or non-IANA location either (GC-COOLING-03 §5/§13).
+
+        Deliberately unconditional on `climate_confirmed`: 0.0 (equator /
+        Greenwich meridian) is always in-range, so there is no need to
+        special-case "unset" here the way `_missing_required_sections`
+        must for presence — bounds checking and presence checking are two
+        different questions.
+        """
+        for study in self:
+            if not (-90 <= study.latitude <= 90):
+                raise ValidationError("latitude must be between -90 and 90.")
+            if not (-180 <= study.longitude <= 180):
+                raise ValidationError("longitude must be between -180 and 180.")
+            if study.altitude_m and not (-500 <= study.altitude_m <= 9000):
+                raise ValidationError("altitude_m must be between -500 and 9000 metres.")
+            if study.timezone and study.timezone not in zoneinfo.available_timezones():
+                raise ValidationError(
+                    f"'{study.timezone}' is not a valid IANA timezone name (e.g. 'Europe/Paris')."
                 )
 
     occupancy_profile_ids = fields.One2many("greencube.cooling.occupancy.profile", "study_id")
@@ -206,10 +296,123 @@ class GreencubeCoolingStudy(models.Model):
                 raise UserError("This study is validated and locked. Create a revision to change its data.")
         return super().write(vals)
 
-    def action_mark_ready(self):
+    def unlink(self):
+        # GC-COOLING-18 audit finding: `equipment_selection_ids` carries
+        # `ondelete="cascade"`, which Postgres enforces as a raw SQL
+        # `ON DELETE CASCADE` — it bypasses
+        # `equipment.selection.unlink()`'s own "a validated selection
+        # cannot be deleted" guard entirely, since the child rows are
+        # removed directly by the database constraint rather than through
+        # the child model's Python `unlink()`. A study with a validated
+        # (i.e. commercially committed) equipment selection must therefore
+        # refuse deletion here, at the one layer that *is* actually called.
         for study in self:
-            missing = study._missing_required_sections()
-            study.state = "incomplete" if missing else "ready"
+            if any(selection.state == "validated" for selection in study.equipment_selection_ids):
+                raise UserError(
+                    "This study has a validated equipment selection and cannot be deleted; "
+                    "cancel or supersede the selection first."
+                )
+        return super().unlink()
+
+    def _invalidate_active_snapshot(self):
+        """Called by the API's section-editing endpoints (GC-COOLING-02)
+        whenever a study's live inputs change after having been frozen
+        into a snapshot. The frozen snapshot record itself is untouched
+        and stays readable/auditable (state moves to 'superseded', it is
+        never deleted or rewritten) but action_calculate() will no longer
+        treat it as the *active* one, so the next calculation freezes
+        fresh inputs instead of silently reusing stale ones.
+
+        Deliberately NOT hooked into write() on the sub-models
+        (occupancy/ventilation/shading/equipment/thermal spec) or on this
+        model: action_calculate() must keep sourcing strictly from the
+        frozen snapshot even when live ORM data is mutated directly
+        (test_action_calculate_uses_frozen_snapshot_not_live_data) — only
+        the API's explicit "save this section" endpoints represent a
+        real user-facing edit that should invalidate a stale freeze.
+        """
+        self.snapshot_ids.filtered(lambda s: s.state == "frozen").write({"state": "superseded"})
+
+    LOCATION_PATCHABLE_FIELDS = (
+        "address", "city", "zip", "country_id", "latitude", "longitude", "altitude_m",
+        "timezone", "environment_type",
+    )
+    LOCATION_PROVENANCES = ("manual", "geocoded", "browser", "imported")
+    LOCATION_PRECISIONS = ("exact", "locality", "region", "country", "unknown")
+
+    def action_confirm_geolocation(self, payload):
+        """Called by POST /studies/<id>/confirm-location (GC-COOLING-03 §16).
+
+        A plain search result or a raw PATCH of lat/lon must never silently
+        become "the" location of the study — this is the one path that:
+        1. re-validates the payload server-side regardless of what the
+           frontend already validated (ir.rule ownership is enforced by the
+           caller browsing the record; range/timezone validity is enforced
+           by `_check_location_bounds` once `write()` below runs);
+        2. records who/what produced the values (`location_provenance`,
+           `location_provider`, `location_precision`, `location_resolved_at`);
+        3. stores a minimal, non-PII-heavy audit trail of the source
+           response (`location_source_json`) instead of trusting the
+           frontend's own copy forever;
+        4. sets `climate_confirmed = True` — the actual "location is usable"
+           signal used elsewhere (`_missing_required_sections`,
+           `get_validation`), never raw lat/lon truthiness;
+        5. invalidates any frozen snapshot so a subsequent calculation is
+           forced to pick up the new location instead of silently reusing
+           stale MERCURE inputs (`_invalidate_active_snapshot`);
+        6. goes through the normal `write()` override, so confirming a new
+           location on a `validated` study still raises "create a revision"
+           instead of mutating history in place — no special-case bypass.
+        """
+        self.ensure_one()
+        payload = payload or {}
+
+        vals = {k: v for k, v in payload.items() if k in self.LOCATION_PATCHABLE_FIELDS}
+        provenance = payload.get("provenance")
+        if provenance not in self.LOCATION_PROVENANCES:
+            provenance = "manual"
+        precision = payload.get("precision")
+        if precision not in self.LOCATION_PRECISIONS:
+            precision = "unknown"
+        provider = payload.get("provider") or False
+
+        source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+        # Only a small, whitelisted subset is retained — never the raw
+        # provider payload, and never the full free-text address, per
+        # GC-COOLING-03 §10/§24 ("ne jamais logger/stocker l'adresse
+        # complète si elle n'est pas nécessaire"): these fields are the
+        # ones actually useful to audit a confirmation later.
+        minimal_source = {
+            k: source.get(k)
+            for k in ("display_name", "city", "country_code", "confidence_percent")
+            if k in source
+        }
+
+        vals.update(
+            {
+                "climate_confirmed": True,
+                "location_provenance": provenance,
+                "location_precision": precision,
+                "location_provider": provider,
+                "location_resolved_at": fields.Datetime.now(),
+                "location_source_json": json.dumps(minimal_source) if minimal_source else False,
+            }
+        )
+        self.write(vals)
+        self._invalidate_active_snapshot()
+        return True
+
+    def action_mark_ready(self):
+        """Transition to `ready` (GC-COOLING-13 "faire passer l'étude au
+        statut ready"). Deliberately gated by get_validation()'s blocking
+        rules rather than the narrower _missing_required_sections() list,
+        so this is the exact same source of truth action_create_snapshot()
+        already uses -- one blocking-rule engine, not two that could drift
+        apart (e.g. a missing active solver version now blocks `ready` too,
+        not only snapshot creation)."""
+        for study in self:
+            validation = study.get_validation()
+            study.state = "ready" if not validation["blocking_count"] else "incomplete"
 
     def _missing_required_sections(self):
         self.ensure_one()
@@ -488,7 +691,19 @@ class GreencubeCoolingStudy(models.Model):
                         "peak_radiation_wm2": radiation_wm2_from_daily_sum(s.get("shortwave_radiation_sum_mj_m2"))
                         * environment_factor,
                         "provenance": "api",
-                        "detail": {"reference_date": s.get("reference_date"), "sample_days": fetched["sample_days"]},
+                        "dataset_id": fetched.get("dataset_id"),
+                        "dataset_type": fetched.get("dataset_type"),
+                        "checksum": fetched.get("checksum"),
+                        "detail": {
+                            "reference_date": s.get("reference_date"),
+                            "sample_days": fetched["sample_days"],
+                            "data_start": fetched.get("data_start"),
+                            "data_end": fetched.get("data_end"),
+                            "provider_code": fetched.get("provider_code"),
+                            "provider_version": fetched.get("provider_version"),
+                            "timezone": fetched.get("timezone"),
+                            "license": fetched.get("license"),
+                        },
                     }
                     for s in fetched["scenarios"]
                 ]
@@ -543,6 +758,9 @@ class GreencubeCoolingStudy(models.Model):
                 "solar_radiation_wm2": s["peak_radiation_wm2"],
                 "wind_speed_ms": s["wind_speed_ms"],
                 "provenance": s["provenance"],
+                "dataset_id": s.get("dataset_id") or False,
+                "dataset_type": s.get("dataset_type") or False,
+                "checksum": s.get("checksum") or False,
                 "detail_json": json.dumps(s.get("detail", {})),
             }
             record = existing_by_code.get(s["code"])
@@ -601,11 +819,48 @@ class GreencubeCoolingStudy(models.Model):
         ]
 
         ventilation = self.ventilation_profile_ids[:1]
-        infiltration_ach = (ventilation.infiltration_ach if ventilation else spec.default_infiltration_ach) or 0.5
+        if ventilation:
+            # Single documented conversion (n50 -> ACH, plus door/window
+            # opening increments) lives on the profile itself so it is
+            # never recomputed ad hoc elsewhere (GC-COOLING-12; previously
+            # the frontend sent its own "* 0.05" approximation and the
+            # backend used it verbatim, and door/window opening frequency
+            # was stored but had no effect on the calculation at all).
+            infiltration_ach = ventilation.get_effective_infiltration_ach()
+            # GC-COOLING-14: this used to be hardcoded to "n50_estimated"
+            # regardless of the actual source, which mislabeled a
+            # manually-entered/measured infiltration_ach (no n50 test at
+            # all) as an n50-derived estimate — silently firing the
+            # LOW_CONFIDENCE_INFILTRATION warning and the confidence-score
+            # penalty even when the value was not actually estimated that
+            # way. Now mirrors get_effective_infiltration_ach()'s own
+            # precedence: n50-derived only when a measured/estimated n50 is
+            # actually set on the profile.
+            infiltration_method = "n50_estimated" if ventilation.airtightness_n50 > 0 else "ach"
+        elif spec.airtightness_n50 > 0:
+            infiltration_ach = ach_from_n50(spec.airtightness_n50, "normal")
+            infiltration_method = "n50_estimated"
+        else:
+            infiltration_ach = spec.default_infiltration_ach or 0.5
+            # No ventilation profile and no n50 value at all: this is a
+            # backend default guess, not a confirmed measurement either, so
+            # it is treated the same as an n50 estimate for confidence
+            # purposes (the schema only distinguishes "ach" — an explicit,
+            # confirmed value — from "n50_estimated" — anything else).
+            infiltration_method = "n50_estimated"
 
         return ms.MercureInput(
             snapshot_id=f"{self.id}-{self.revision_number}",
-            snapshot_hash=self.input_snapshot_hash or "",
+            # Deliberately always "" here, never self.input_snapshot_hash:
+            # the hash of *this* payload can only be known once the payload
+            # is fully built and serialized (action_create_snapshot() hashes
+            # it right after this call returns). Embedding the *previous*
+            # snapshot's hash used to make every rebuild of an otherwise
+            # unchanged study hash differently from the last one, which
+            # silently defeated the idempotent-recreate check below (GC-
+            # COOLING-13 "Idempotence": a double click or retried request
+            # must not freeze a second, functionally-identical snapshot).
+            snapshot_hash="",
             study_id=str(self.id),
             study_version=str(self.revision_number),
             climate_scenarios=self._build_climate_scenarios(),
@@ -629,7 +884,16 @@ class GreencubeCoolingStudy(models.Model):
             occupancy=ms.Occupancy(
                 usual_occupants=occupancy.usual_occupants if occupancy else 0,
                 maximum_occupants=occupancy.maximum_occupants if occupancy else 0,
-                occupancy_fraction=1.0,
+                # GC-COOLING-10: was hardcoded to 1.0, which silently made
+                # the occupancy profile's weekly schedule/hours have zero
+                # effect on the calculated sensible/latent occupant gains
+                # regardless of what the Usage screen showed. Now sourced
+                # from the profile's own occupancy_fraction (daily
+                # occupied hours / 24, see occupancy_profile.py), the same
+                # steady-state-average simplification already used for
+                # equipment's operating_fraction and lighting's
+                # usage_fraction just below.
+                occupancy_fraction=occupancy.occupancy_fraction if occupancy else 1.0,
                 sensible_gain_per_person_w=occupancy.sensible_gain_per_person_w if occupancy else 70,
                 latent_gain_per_person_g_h=occupancy.latent_gain_per_person_g_h if occupancy else 50,
             ),
@@ -646,10 +910,17 @@ class GreencubeCoolingStudy(models.Model):
                 heat_recovery_efficiency=(ventilation.heat_recovery_efficiency_percent / 100.0) if ventilation else 0.0,
                 bypass_active=ventilation.bypass_active if ventilation else False,
                 fan_power_w=ventilation.fan_power_w if ventilation else 30,
-                fan_fraction_dissipated_in_zone=1.0,
+                # GC-COOLING-14: was hardcoded to 1.0 regardless of the
+                # ventilation profile, silently ignoring a fan located
+                # outside the conditioned zone (e.g. a rooftop
+                # dedicated_mechanical/double_flow AHU) — see
+                # ventilation_profile.fan_fraction_dissipated_in_zone.
+                fan_fraction_dissipated_in_zone=(
+                    ventilation.fan_fraction_dissipated_in_zone if ventilation else 1.0
+                ),
                 fan_operating_fraction=1.0,
             ),
-            infiltration=ms.Infiltration(method="n50_estimated", air_changes_per_hour=infiltration_ach),
+            infiltration=ms.Infiltration(method=infiltration_method, air_changes_per_hour=infiltration_ach),
             comfort=ms.Comfort(
                 cooling_setpoint_day_c=self.cooling_setpoint_c,
                 cooling_setpoint_night_c=self.cooling_setpoint_c + self.night_setpoint_offset_c,
@@ -675,6 +946,17 @@ class GreencubeCoolingStudy(models.Model):
         payload_dict = mercure_input_to_dict(mercure_input)
         payload_json = json.dumps(payload_dict, sort_keys=True, default=str)
         snapshot_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+        # Idempotence (GC-COOLING-13 "Idempotence": double click, network
+        # retry, back-navigation-then-resubmit, refresh must never freeze a
+        # second snapshot when nothing about the study actually changed
+        # since the currently-active one was frozen). The hash is now a
+        # pure function of the study's content + requested engine (see the
+        # comment in _build_mercure_input), so comparing it against the
+        # active snapshot's own hash is a reliable no-op detector.
+        active = self.active_snapshot_id
+        if active and active.requested_engine == engine and active.snapshot_hash == snapshot_hash:
+            return snapshot_hash
 
         # Only one frozen snapshot per study at a time: creating a new one
         # supersedes whatever was frozen before, so action_calculate() always
@@ -718,17 +1000,29 @@ class GreencubeCoolingStudy(models.Model):
         record independent of whether it produced a result.
         """
         self.ensure_one()
+        if not self.active_snapshot_id or (engine and self.active_snapshot_id.requested_engine != engine):
+            self.action_create_snapshot(engine=engine or "quick_solver")
+
+        snapshot = self.active_snapshot_id
+
         if idempotency_key:
             existing = self.env["greencube.cooling.result"].search(
                 [("idempotency_key", "=", idempotency_key), ("study_id", "=", self.id)], limit=1
             )
             if existing:
+                # Same key, same frozen inputs: idempotent replay, return the
+                # original result untouched. Same key, different inputs (the
+                # study was edited since the key was first used): this is a
+                # client bug or a stale retry racing a real edit — refuse it
+                # loudly instead of either recomputing (breaks idempotency)
+                # or silently returning the now-stale result (hides the
+                # study's actual current inputs from the caller).
+                if existing.snapshot_hash != snapshot.snapshot_hash:
+                    raise CoolingIdempotencyConflict(
+                        "This Idempotency-Key was already used for a different set of study inputs."
+                    )
                 return existing
 
-        if not self.active_snapshot_id or (engine and self.active_snapshot_id.requested_engine != engine):
-            self.action_create_snapshot(engine=engine or "quick_solver")
-
-        snapshot = self.active_snapshot_id
         self.state = "calculating"
         started_at = time.monotonic()
 
@@ -789,6 +1083,7 @@ class GreencubeCoolingStudy(models.Model):
                 "governing_scenario_code": result.governing_scenario_code,
                 "warnings_json": json.dumps([w.__dict__ for w in result.warnings] + energyplus_warnings),
                 "main_load_drivers_json": json.dumps(result.main_load_drivers),
+                "solar_gain_by_facade_json": json.dumps([g.__dict__ for g in governing.solar_gain_by_facade]),
                 "duration_ms": duration_ms,
                 "snapshot_hash": snapshot.snapshot_hash,
                 "idempotency_key": idempotency_key or None,

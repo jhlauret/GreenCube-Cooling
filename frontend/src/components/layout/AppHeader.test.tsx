@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AppHeader } from './AppHeader';
@@ -20,6 +20,7 @@ describe('AppHeader', () => {
     ['saving', 'Enregistrement…'],
     ['synced', 'Synchronisé avec Odoo'],
     ['error', 'Échec de synchronisation'],
+    ['conflict', 'Conflit de version — modifié ailleurs'],
   ] as const)('renders the %s state with label "%s"', (syncState, label) => {
     render(<AppHeader syncState={syncState} />);
     expect(screen.getByText(label)).toBeInTheDocument();
@@ -65,6 +66,26 @@ describe('AppHeader', () => {
 
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows a "Recharger depuis Odoo" button only in the conflict state, and only when onReload is provided', () => {
+    const { rerender } = render(<AppHeader syncState="conflict" />);
+    expect(screen.queryByRole('button', { name: 'Recharger depuis Odoo' })).not.toBeInTheDocument();
+
+    rerender(<AppHeader syncState="conflict" onReload={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Recharger depuis Odoo' })).toBeInTheDocument();
+
+    rerender(<AppHeader syncState="synced" onReload={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Recharger depuis Odoo' })).not.toBeInTheDocument();
+  });
+
+  it('calls onReload when the reload button is clicked', async () => {
+    const user = userEvent.setup();
+    const onReload = vi.fn();
+    render(<AppHeader syncState="conflict" onReload={onReload} />);
+
+    await user.click(screen.getByRole('button', { name: 'Recharger depuis Odoo' }));
+    expect(onReload).toHaveBeenCalledTimes(1);
   });
 
   it('does not present the language indicator as an interactive dropdown', () => {

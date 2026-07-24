@@ -500,6 +500,35 @@ et réellement rapporté le résultat. Voir `docs/cooling_v2_traceability_matrix
 lot mis à jour. Environnement restauré après coup (mot de passe Postgres temporaire retiré, base de test
 supprimée) ; le service Odoo de production n'a pas été touché.
 
+## Lot multi-société — provisionnement automatique du solver et du catalogue (2026-07-20, suite)
+
+Le point "solver de test par société" ci-dessus ne corrigeait qu'une fixture — pas le vrai défaut de
+production. Vérifié explicitement avec un utilisateur non-superutilisateur d'une deuxième société, dans
+une base fraîche : ni la version MERCURE active ni aucun modèle catalogue GreenCube n'étaient visibles
+(`SOLVER_VERSION_MISSING` + `MODEL_MISSING` bloquants), car `data/solver_version_data.xml` et
+`data/thermal_specification_catalog_data.xml` ne créent leurs lignes que pour la société active à
+l'installation (`company_id` y est `required=True`).
+
+**Corrigé automatiquement** (version 18.0.3.0.0 → 18.0.4.0.0) : `models/solver_version.py` et
+`models/thermal_specification.py` gagnent chacun une méthode `_provision_*_for_companies()` qui copie les
+données de référence existantes vers toute société qui n'en a pas ; `models/res_company.py` (nouveau)
+surcharge `create()` pour les nouvelles sociétés ; `post_init_hook` couvre les sociétés déjà présentes à
+l'installation ; `migrations/18.0.4.0.0/post-migrate.py` couvre le même cas pour une mise à niveau.
+
+**Piège Odoo réel rencontré** : `record.copy({"company_id": ...})` réinitialise silencieusement `state` à
+sa valeur par défaut — comportement documenté d'Odoo pour tout champ nommé exactement `state`
+(`odoo/fields.py`), sans annotation explicite dans notre code. La première version du correctif créait
+donc bien la ligne, mais en `draft`, donc toujours invisible pour `get_validation()`. Découvert en
+vérifiant l'état réel en base plutôt qu'en supposant que `copy()` préserve tout par défaut ; corrigé en
+passant `"state": "active"` explicitement.
+
+**Vérifié réellement, deux fois** (avant et après ce correctif) : société créée après installation
+(chemin `res.company.create()`) et société déjà présente avant l'installation du module (chemin
+`post_init_hook`), dans les deux cas avec un vrai utilisateur non-admin et `.with_user()` (jamais en
+sudo, qui contourne `ir.rule`). Suite complète rejouée : toujours 45/45, 0 échec — après avoir retiré le
+provisionnement manuel désormais redondant dans `test_http_api.py::setUpClass`, qui entrait en conflit
+avec le nouveau provisionnement automatique (`_check_single_active`).
+
 ## Ce qui reste en suspens
 
 Le runtime Odoo est maintenant disponible et a été utilisé pour toutes les vérifications ci-dessus.

@@ -1,0 +1,85 @@
+/**
+ * Golden numeric reference for the MERCURE Python (canonical) engine,
+ * generated from services/mercure/fixtures.py's studio_standard_input and
+ * west_glazed_office_input (see also
+ * addons/greencube_cooling/tests/fixtures/mercure_golden_reference.json,
+ * the same numbers used by the Python-side conformance test). Checked
+ * against runMercure()'s own output in engine.test.ts within an explicit
+ * relative tolerance (GC-COOLING-14 pt.5: 'tests de conformite TS/Python').
+ *
+ * Regenerate only when a deliberate, documented formula change is made in
+ * BOTH engine.ts and engine.py together -- a diff here without one is a
+ * cross-implementation regression, not a routine update.
+ */
+const goldenReference = {
+  "studioStandard": {
+    "engineCode": "MERCURE",
+    "engineVersion": "1.0.0",
+    "governingScenarioCode": "prolonged_heatwave",
+    "recommendedCapacityBtuH": 9605.036285116763,
+    "recommendedCapacityKw": 2.8149582614679947,
+    "recommendedCapacityW": 2814.958261467995,
+    "scenarios": {
+      "hot_weather": {
+        "latentLoadW": 417.9074021704082,
+        "marginW": 297.39009032556123,
+        "recommendedLoadW": 2279.9906924959696,
+        "sensibleLoadW": 1564.6932,
+        "shr": 0.7892125112274689,
+        "totalLoadW": 1982.6006021704081
+      },
+      "prolonged_heatwave": {
+        "latentLoadW": 569.8910925808652,
+        "marginW": 367.1684688871298,
+        "recommendedLoadW": 2814.958261467995,
+        "sensibleLoadW": 1877.8987,
+        "shr": 0.7671813591558482,
+        "totalLoadW": 2447.789792580865
+      },
+      "reference_summer": {
+        "latentLoadW": 384.832835652583,
+        "marginW": 245.44808034788744,
+        "recommendedLoadW": 1881.7686160004705,
+        "sensibleLoadW": 1251.4877,
+        "shr": 0.7648181836823875,
+        "totalLoadW": 1636.320535652583
+      }
+    }
+  },
+  "westGlazedOffice": {
+    "engineCode": "MERCURE",
+    "engineVersion": "1.0.0",
+    "governingScenarioCode": "prolonged_heatwave",
+    "recommendedCapacityBtuH": 19409.851054297345,
+    "recommendedCapacityKw": 5.688465817023551,
+    "recommendedCapacityW": 5688.465817023551,
+    "scenarios": {
+      "hot_weather": {
+        "latentLoadW": 487.37962439263043,
+        "marginW": 666.0529236588945,
+        "recommendedLoadW": 5106.405748051525,
+        "sensibleLoadW": 3952.9732,
+        "shr": 0.8902385365155535,
+        "totalLoadW": 4440.35282439263
+      },
+      "prolonged_heatwave": {
+        "latentLoadW": 639.3633148030874,
+        "marginW": 741.9738022204632,
+        "recommendedLoadW": 5688.465817023551,
+        "sensibleLoadW": 4307.1287,
+        "shr": 0.8707440924013016,
+        "totalLoadW": 4946.492014803088
+      },
+      "reference_summer": {
+        "latentLoadW": 454.30505787480524,
+        "marginW": 607.9684136812208,
+        "recommendedLoadW": 4661.091171556026,
+        "sensibleLoadW": 3598.8177,
+        "shr": 0.8879123369771772,
+        "totalLoadW": 4053.1227578748053
+      }
+    }
+  }
+} as const;
+
+export default goldenReference;

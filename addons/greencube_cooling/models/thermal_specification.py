@@ -126,6 +126,27 @@ class GreencubeThermalSpecification(models.Model):
                 )
         return super().write(vals)
 
+    def _provision_catalog_for_companies(self, companies):
+        """Ensures every company in `companies` has its own copy of each
+        standard_model catalog template (Studio/Bureau/Habitat/Commerce),
+        copied from whichever company already has that `code`.
+
+        Same real gap as GreencubeCoolingSolverVersion._provision_for_companies:
+        company_id is required and data/thermal_specification_catalog_data.xml
+        only ever creates these for the company active at install time, so a
+        second company would see an empty GET /thermal-specification-templates
+        (found by testing a real non-superuser user of a second company).
+        Idempotent: a company that already has a given code is left untouched.
+        """
+        references_by_code = {}
+        for rec in self.sudo().search([("standard_model", "=", True)]):
+            references_by_code.setdefault(rec.code, rec)
+        for company in companies:
+            for code, reference in references_by_code.items():
+                if self.sudo().search([("code", "=", code), ("company_id", "=", company.id)], limit=1):
+                    continue
+                reference.sudo().copy({"company_id": company.id})
+
     def action_create_new_version(self):
         self.ensure_one()
         try:

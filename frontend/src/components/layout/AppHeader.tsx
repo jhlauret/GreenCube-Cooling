@@ -7,8 +7,11 @@ import { useUiStore } from '../../store/studyStore';
  * - saving: an autosave request is currently in flight.
  * - synced: local draft matches what was last pushed to Odoo.
  * - error: the last autosave attempt failed (see syncErrorMessage).
+ * - conflict: the backend rejected the last save because the study was
+ *   modified elsewhere since this draft was last read (409, GC-COOLING-06
+ *   §17) — autosave is paused until the user reloads explicitly.
  */
-export type SyncState = 'local' | 'dirty' | 'saving' | 'synced' | 'error';
+export type SyncState = 'local' | 'dirty' | 'saving' | 'synced' | 'error' | 'conflict';
 
 const SYNC_STATE_DISPLAY: Record<SyncState, { icon: string; label: string }> = {
   local: { icon: '📝', label: 'Brouillon local' },
@@ -16,6 +19,7 @@ const SYNC_STATE_DISPLAY: Record<SyncState, { icon: string; label: string }> = {
   saving: { icon: '🔄', label: 'Enregistrement…' },
   synced: { icon: '☁️', label: 'Synchronisé avec Odoo' },
   error: { icon: '⚠️', label: 'Échec de synchronisation' },
+  conflict: { icon: '⚠️', label: 'Conflit de version — modifié ailleurs' },
 };
 
 /**
@@ -37,9 +41,14 @@ const SYNC_STATE_DISPLAY: Record<SyncState, { icon: string; label: string }> = {
 export function AppHeader({
   syncState = 'local',
   syncErrorMessage = null,
+  onReload = null,
 }: {
   syncState?: SyncState;
   syncErrorMessage?: string | null;
+  /** Shown only in the `conflict` state — reloads the study from Odoo,
+   * discarding the local draft that could not be saved (GC-COOLING-06 §17
+   * "proposer de recharger"). */
+  onReload?: (() => void) | null;
 }) {
   const helpOpen = useUiStore((state) => state.helpOpen);
   const toggleHelp = useUiStore((state) => state.toggleHelp);
@@ -62,13 +71,22 @@ export function AppHeader({
       </div>
       <div className="flex items-center gap-5 text-sm text-ink-soft">
         <span
-          className={'flex items-center gap-1.5' + (syncState === 'error' ? ' text-red-600' : '')}
-          title={syncState === 'error' && syncErrorMessage ? syncErrorMessage : undefined}
+          className={'flex items-center gap-1.5' + (syncState === 'error' || syncState === 'conflict' ? ' text-red-600' : '')}
+          title={(syncState === 'error' || syncState === 'conflict') && syncErrorMessage ? syncErrorMessage : undefined}
           aria-live="polite"
         >
           <span aria-hidden>{display.icon}</span>
           {display.label}
         </span>
+        {syncState === 'conflict' && onReload && (
+          <button
+            type="button"
+            onClick={onReload}
+            className="rounded-md border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+          >
+            Recharger depuis Odoo
+          </button>
+        )}
         <button
           type="button"
           onClick={toggleHelp}

@@ -14,6 +14,13 @@ const VENTILATION_SYSTEMS: { code: ComfortData['ventilationSystem']; label: stri
   { code: 'dedicated_mechanical', label: 'Ventilation mécanique dédiée', icon: '💨' },
 ];
 
+const OPENING_FREQUENCIES: { code: 'rare' | 'occasional' | 'frequent' | 'continuous'; label: string }[] = [
+  { code: 'rare', label: 'Rare' },
+  { code: 'occasional', label: 'Occasionnelle' },
+  { code: 'frequent', label: 'Fréquente' },
+  { code: 'continuous', label: 'Continue' },
+];
+
 const SERVICE_LEVELS: { code: ComfortData['serviceLevel']; label: string; description: string }[] = [
   { code: 'standard', label: 'Confort standard', description: 'Conditions de confort usuelles pour la majorité des situations climatiques.' },
   { code: 'enhanced', label: 'Confort renforcé', description: 'Meilleur confort thermique et qualité d\'air améliorée. Recommandé pour les usages exigeants.' },
@@ -54,7 +61,7 @@ export function ComfortStep() {
               ))}
             </div>
 
-            <div className="mt-4 grid grid-cols-1 gap-3">
+            <div className="mt-4 grid grid-cols-2 gap-3">
               <LabeledNumber
                 label="Débit d'air estimé (m³/h)"
                 value={comfort.estimatedAirflowM3h}
@@ -62,6 +69,66 @@ export function ComfortStep() {
                 max={5000}
                 onChange={(v) => patch({ estimatedAirflowM3h: v })}
               />
+              <LabeledNumber
+                label="Puissance ventilateur (W)"
+                value={comfort.fanPowerW}
+                min={0}
+                max={5000}
+                onChange={(v) => patch({ fanPowerW: v })}
+              />
+              <LabeledNumber
+                label="Récupération de chaleur (%)"
+                value={comfort.heatRecoveryEfficiencyPercent}
+                min={0}
+                max={100}
+                onChange={(v) => patch({ heatRecoveryEfficiencyPercent: v })}
+              />
+            </div>
+          </Card>
+
+          <Card title="Ouvertures">
+            <p className="mb-3 text-sm text-ink-soft">
+              Fréquence d'ouverture des fenêtres et des portes — utilisée par le calcul d'infiltration.
+            </p>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <p className="mb-1 text-xs text-ink-soft">Fenêtres</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {OPENING_FREQUENCIES.map((f) => (
+                    <button
+                      key={f.code}
+                      onClick={() => patch({ windowOpeningFrequency: f.code })}
+                      className={
+                        'rounded-lg border px-2 py-1.5 text-xs ' +
+                        (comfort.windowOpeningFrequency === f.code
+                          ? 'border-brand-500 bg-brand-50 text-brand-700'
+                          : 'border-border text-ink-soft hover:border-brand-300')
+                      }
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="mb-1 text-xs text-ink-soft">Portes</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {OPENING_FREQUENCIES.map((f) => (
+                    <button
+                      key={f.code}
+                      onClick={() => patch({ doorOpeningFrequency: f.code })}
+                      className={
+                        'rounded-lg border px-2 py-1.5 text-xs ' +
+                        (comfort.doorOpeningFrequency === f.code
+                          ? 'border-brand-500 bg-brand-50 text-brand-700'
+                          : 'border-border text-ink-soft hover:border-brand-300')
+                      }
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </Card>
 

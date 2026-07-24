@@ -2,5 +2,11 @@ from . import test_mercure_engine
 from . import test_mercure_serialization
 from . import test_compatibility
 from . import test_cooling_study
+from . import test_calculation_job
 from . import test_honeybee_translator
+from . import test_energyplus_service
 from . import test_http_api
+from . import test_api_security
+from . import test_geolocation
+from . import test_climate_service
+from . import test_climate_dataset

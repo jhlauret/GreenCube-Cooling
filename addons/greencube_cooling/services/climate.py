@@ -38,6 +38,30 @@ SCENARIO_PERCENTILES = {
     "hot_weather": 0.98,
 }
 
+# --- Provenance / governance constants (GC-COOLING-04) ----------------------
+#
+# Every value the solver ever sees must be traceable to a provider, a
+# version and a dataset type. Bump PROVIDER_VERSION or SCHEMA_VERSION
+# whenever the request shape, the variable list or the returned payload
+# shape changes — `climate.dataset.get_or_fetch_scenarios()` folds these
+# into its cache key so a version bump always produces a *new* dataset
+# record instead of silently reinterpreting old cached rows under a new
+# meaning.
+PROVIDER_CODE = "open_meteo"
+PROVIDER_VERSION = "archive_v1"
+SCHEMA_VERSION = 1
+PROVIDER_LICENSE = "Open-Meteo archive API (ERA5/ERA5-Land reanalysis), CC-BY 4.0"
+
+# This service only ever derives scenarios from *observed* history (daily
+# ERA5 reanalysis for years already in the past). It never calls a
+# prospective/forward-looking climate model, so the only honest dataset
+# type it can ever produce today is `historical_observed`. A real
+# `projection` type (CMIP6/CORDEX or similar) would need its own provider
+# and its own explicit feature flag — see README_GC-COOLING-04 "Ne pas
+# appeler <<projection>> une extrapolation non issue d'un jeu de données
+# prospectif reconnu."
+DATASET_TYPE_HISTORICAL_OBSERVED = "historical_observed"
+
 
 class ClimateServiceError(Exception):
     """Raised when the historical weather provider cannot be reached or
@@ -85,6 +109,12 @@ def fetch_historical_daily(latitude, longitude, years=HISTORY_YEARS):
     daily = data.get("daily")
     if not daily or not daily.get("time"):
         raise ClimateServiceError("Historical climate provider returned no data for this location.")
+    # Open-Meteo resolves `timezone=auto` server-side and echoes the actual
+    # IANA zone it used for the returned local dates — captured so the
+    # dataset can honestly state which timezone its daily boundaries (and
+    # therefore its scenario dates) are expressed in (GC-COOLING-04
+    # "Conserver ... fuseau IANA").
+    daily["_resolved_timezone"] = data.get("timezone") or "UTC"
     return daily
 
 
@@ -157,6 +187,17 @@ def build_climate_scenarios(latitude, longitude, environment_type=None):
         "sample_days": len(warm_indices),
         "data_start": daily["time"][0],
         "data_end": daily["time"][-1],
+        # Governance/provenance metadata (GC-COOLING-04): every dataset
+        # persisted by climate.dataset carries these so a calculation can
+        # always answer "which provider, which version, which period, which
+        # timezone, under which license produced this number".
+        "provider_code": PROVIDER_CODE,
+        "provider_version": PROVIDER_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "dataset_type": DATASET_TYPE_HISTORICAL_OBSERVED,
+        "license": PROVIDER_LICENSE,
+        "timezone": daily.get("_resolved_timezone", "UTC"),
+        "variables": sorted(DAILY_VARS.split(",")),
     }
 
 

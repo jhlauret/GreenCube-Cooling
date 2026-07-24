@@ -3,7 +3,7 @@ import { useStudyStore, useSyncStatusStore } from './studyStore';
 
 beforeEach(() => {
   useStudyStore.setState({ studies: {} });
-  useSyncStatusStore.setState({ saving: {}, errors: {} });
+  useSyncStatusStore.setState({ saving: {}, errors: {}, conflicts: {} });
 });
 
 describe('useStudyStore', () => {
@@ -69,5 +69,14 @@ describe('useSyncStatusStore', () => {
     expect(useSyncStatusStore.getState().saving.b).toBeUndefined();
     expect(useSyncStatusStore.getState().errors.b).toBe('boom');
     expect(useSyncStatusStore.getState().errors.a).toBeUndefined();
+  });
+
+  it('tracks a version conflict independently from saving/error, per study id', () => {
+    useSyncStatusStore.getState().setConflict('a', true);
+    expect(useSyncStatusStore.getState().conflicts.a).toBe(true);
+    expect(useSyncStatusStore.getState().conflicts.b).toBeUndefined();
+
+    useSyncStatusStore.getState().setConflict('a', false);
+    expect(useSyncStatusStore.getState().conflicts.a).toBe(false);
   });
 });

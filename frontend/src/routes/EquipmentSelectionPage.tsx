@@ -9,6 +9,7 @@ import {
   getEquipmentRecommendations,
   listEquipmentSelections,
   postEquipmentSelection,
+  validateEquipmentSelection,
   type EquipmentRecommendation,
   type EquipmentSelection,
 } from '../api/study';
@@ -29,6 +30,7 @@ const STATUS_LABELS: Record<string, string> = {
   compatible_with_conditions: 'Compatible sous conditions',
   not_recommended: 'Non recommandé',
   incompatible: 'Incompatible',
+  insufficient_data: 'Données insuffisantes',
 };
 
 const STATUS_TONE: Record<string, 'brand' | 'warn' | 'neutral'> = {
@@ -38,6 +40,7 @@ const STATUS_TONE: Record<string, 'brand' | 'warn' | 'neutral'> = {
   compatible_with_conditions: 'warn',
   not_recommended: 'warn',
   incompatible: 'warn',
+  insufficient_data: 'warn',
 };
 
 export function EquipmentSelectionPage() {
@@ -50,6 +53,7 @@ export function EquipmentSelectionPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectingId, setSelectingId] = useState<number | null>(null);
+  const [validatingId, setValidatingId] = useState<number | null>(null);
 
   function refreshHistory(backendId: number) {
     listEquipmentSelections(backendId)
@@ -65,7 +69,14 @@ export function EquipmentSelectionPage() {
     let cancelled = false;
     getEquipmentRecommendations(study.backendId)
       .then((data) => {
-        if (!cancelled) setRecommendations(data.sort((a, b) => (a.oversizing_ratio ?? 99) - (b.oversizing_ratio ?? 99)));
+        // The backend already returns recommendations in a robust, stable
+        // rank order (status category first, then closeness to an ideal
+        // oversizing ratio, then product id) — see
+        // services/compatibility.py:recommendation_sort_key(). Re-sorting
+        // here on the raw oversizing_ratio alone previously floated
+        // products with missing/zero technical data (ratio 0.0) to the
+        // top of the list, ahead of genuinely well-matched equipment.
+        if (!cancelled) setRecommendations(data);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -94,6 +105,19 @@ export function EquipmentSelectionPage() {
       refreshHistory(study.backendId);
     } finally {
       setSelectingId(null);
+    }
+  }
+
+  async function validate(selectionId: number) {
+    if (!study?.backendId) return;
+    setValidatingId(selectionId);
+    try {
+      await validateEquipmentSelection(study.backendId, selectionId);
+      refreshHistory(study.backendId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'La validation de la sélection a échoué.');
+    } finally {
+      setValidatingId(null);
     }
   }
 
@@ -126,7 +150,8 @@ export function EquipmentSelectionPage() {
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {recommendations.map(({ product, status, reasons }) => {
               const selected = study.selectedEquipmentProductId === String(product.id);
-              const isIncompatible = status === 'incompatible';
+              const isDataIncomplete = status === 'insufficient_data';
+              const isIncompatible = status === 'incompatible' || isDataIncomplete;
               return (
                 <Card key={product.id} className={selected ? 'border-brand-500' : undefined}>
                   <div className="flex items-start justify-between gap-3">
@@ -166,7 +191,15 @@ export function EquipmentSelectionPage() {
                     disabled={isIncompatible || selectingId === product.id}
                     onClick={() => void select(product.id)}
                   >
-                    {selected ? 'Sélectionné ✓' : isIncompatible ? 'Incompatible' : selectingId === product.id ? 'Sélection…' : 'Sélectionner'}
+                    {selected
+                      ? 'Sélectionné ✓'
+                      : isDataIncomplete
+                        ? 'Données insuffisantes'
+                        : isIncompatible
+                          ? 'Incompatible'
+                          : selectingId === product.id
+                            ? 'Sélection…'
+                            : 'Sélectionner'}
                   </Button>
                 </Card>
               );
@@ -197,6 +230,16 @@ export function EquipmentSelectionPage() {
                     <Badge tone={s.state === 'validated' ? 'brand' : s.state === 'superseded' ? 'neutral' : 'warn'}>
                       {SELECTION_STATE_LABELS[s.state] ?? s.state}
                     </Badge>
+                    {s.state === 'selected' && (
+                      <Button
+                        variant="secondary"
+                        className="!w-auto px-3 py-1 text-xs"
+                        disabled={validatingId === s.id}
+                        onClick={() => void validate(s.id)}
+                      >
+                        {validatingId === s.id ? 'Validation…' : 'Valider'}
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}

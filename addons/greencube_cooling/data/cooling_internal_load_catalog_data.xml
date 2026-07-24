@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Internal-loads (equipment/lighting/appliances) catalog (GC-COOLING-11):
+  the reference templates offered by the Equipment step (laptop, monitor,
+  server, ...). Loaded unconditionally (data, not demo) since these are
+  real catalog entries the frontend fetches via GET /equipment-load-catalog
+  instead of hardcoding them in a frontend source file.
+
+  Reference values mirror the previous frontend-hardcoded array so this
+  migration does not silently change what a new study proposes.
+-->
+<odoo noupdate="1">
+    <record id="internal_load_laptop" model="product.template">
+        <field name="name">Ordinateur portable</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">laptop</field>
+        <field name="internal_load_category">it</field>
+        <field name="internal_load_unit_power_w">45</field>
+        <field name="internal_load_usage_hours_per_day">8</field>
+        <field name="internal_load_simultaneity_percent">100</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_monitor" model="product.template">
+        <field name="name">Écran</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">monitor</field>
+        <field name="internal_load_category">it</field>
+        <field name="internal_load_unit_power_w">25</field>
+        <field name="internal_load_usage_hours_per_day">8</field>
+        <field name="internal_load_simultaneity_percent">100</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_printer" model="product.template">
+        <field name="name">Imprimante</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">printer</field>
+        <field name="internal_load_category">it</field>
+        <field name="internal_load_unit_power_w">300</field>
+        <field name="internal_load_usage_hours_per_day">1</field>
+        <field name="internal_load_simultaneity_percent">20</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_server" model="product.template">
+        <field name="name">Serveur</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">server</field>
+        <field name="internal_load_category">it</field>
+        <field name="internal_load_unit_power_w">800</field>
+        <field name="internal_load_usage_hours_per_day">24</field>
+        <field name="internal_load_simultaneity_percent">100</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_led" model="product.template">
+        <field name="name">Éclairage LED</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">led</field>
+        <field name="internal_load_category">lighting</field>
+        <field name="internal_load_unit_power_w">15</field>
+        <field name="internal_load_usage_hours_per_day">10</field>
+        <field name="internal_load_simultaneity_percent">100</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_coffee" model="product.template">
+        <field name="name">Machine à café</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">coffee</field>
+        <field name="internal_load_category">kitchen</field>
+        <field name="internal_load_unit_power_w">1200</field>
+        <field name="internal_load_usage_hours_per_day">0.5</field>
+        <field name="internal_load_simultaneity_percent">30</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_network" model="product.template">
+        <field name="name">Réseau (switch / routeur)</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">network</field>
+        <field name="internal_load_category">network</field>
+        <field name="internal_load_unit_power_w">30</field>
+        <field name="internal_load_usage_hours_per_day">24</field>
+        <field name="internal_load_simultaneity_percent">100</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_battery" model="product.template">
+        <field name="name">Batterie</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">battery</field>
+        <field name="internal_load_category">battery</field>
+        <field name="internal_load_unit_power_w">500</field>
+        <field name="internal_load_usage_hours_per_day">2</field>
+        <field name="internal_load_simultaneity_percent">50</field>
+        <field name="data_quality">catalog</field>
+    </record>
+
+    <record id="internal_load_ups" model="product.template">
+        <field name="name">Onduleur</field>
+        <field name="type">consu</field>
+        <field name="sale_ok" eval="False"/>
+        <field name="purchase_ok" eval="False"/>
+        <field name="is_internal_load_equipment" eval="True"/>
+        <field name="internal_load_code">ups</field>
+        <field name="internal_load_category">inverter</field>
+        <field name="internal_load_unit_power_w">600</field>
+        <field name="internal_load_usage_hours_per_day">24</field>
+        <field name="internal_load_simultaneity_percent">100</field>
+        <field name="data_quality">catalog</field>
+    </record>
+</odoo>

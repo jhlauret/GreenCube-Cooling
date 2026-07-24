@@ -20,12 +20,19 @@ export function useAutosave(study: StudyDraft) {
   const patchSilently = useStudyStore((state) => state.patchSilently);
   const setSaving = useSyncStatusStore((state) => state.setSaving);
   const setError = useSyncStatusStore((state) => state.setError);
+  const setConflict = useSyncStatusStore((state) => state.setConflict);
 
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef(false);
   const pendingRef = useRef(false);
 
   useEffect(() => {
+    // A version conflict must stop autosave until the user explicitly
+    // reloads or resolves it — retrying on a timer would just re-send the
+    // same stale draft and get 409 again, or worse, succeed after the user
+    // already discarded their local copy (GC-COOLING-06 §17).
+    if (useSyncStatusStore.getState().conflicts[study.id]) return;
+
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
 
     timeoutRef.current = setTimeout(() => {
@@ -48,6 +55,7 @@ export function useAutosave(study: StudyDraft) {
       pendingRef.current = true;
       return;
     }
+    if (useSyncStatusStore.getState().conflicts[study.id]) return;
     inFlightRef.current = true;
     setSaving(study.id, true);
     setError(study.id, null);
@@ -58,15 +66,21 @@ export function useAutosave(study: StudyDraft) {
         latest,
         (id) => patchSilently(latest.id, { backendId: id }),
         (equipment) => patchSilently(latest.id, { equipment }),
+        (updatedAt) => patchSilently(latest.id, { backendUpdatedAt: updatedAt }),
       );
       markSynced(latest.id, new Date().toISOString());
       void backendId;
     } catch (err) {
-      setError(study.id, err instanceof ApiError ? err.message : 'La synchronisation automatique a échoué.');
+      if (err instanceof ApiError && err.status === 409) {
+        setConflict(study.id, true);
+        setError(study.id, err.message);
+      } else {
+        setError(study.id, err instanceof ApiError ? err.message : 'La synchronisation automatique a échoué.');
+      }
     } finally {
       setSaving(study.id, false);
       inFlightRef.current = false;
-      if (pendingRef.current) {
+      if (pendingRef.current && !useSyncStatusStore.getState().conflicts[study.id]) {
         pendingRef.current = false;
         void runSync();
       }

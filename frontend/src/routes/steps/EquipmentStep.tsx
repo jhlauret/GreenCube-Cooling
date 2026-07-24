@@ -1,10 +1,11 @@
+import { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { Card } from '../../components/ui/Card';
 import { WizardFooter } from '../../components/layout/WizardFooter';
 import { useWizardNav } from '../useWizardNav';
 import { useStudyStore } from '../../store/studyStore';
 import type { EquipmentItem, StudyDraft } from '../../types/study';
-import { INTERNAL_LOADS_CATALOG as CATALOG } from '../../equipment/internalLoadsCatalog';
+import { fetchInternalLoadsCatalog, type InternalLoadCatalogEntry } from '../../equipment/internalLoadsCatalog';
 import { defaultNextSteps } from './defaultNextSteps';
 
 function simultaneousPowerW(item: EquipmentItem): number {
@@ -16,12 +17,47 @@ export function EquipmentStep() {
   const updateStudy = useStudyStore((state) => state.updateStudy);
   const { studyId, goToNext, goToPrevious } = useWizardNav('equipment');
 
-  function toggleItem(template: Omit<EquipmentItem, 'selected'>) {
+  // Internal-loads catalog fetched from Odoo (GC-COOLING-11) — never
+  // hardcoded in the frontend. `product.template` records flagged
+  // `is_internal_load_equipment` are the sole source of these templates.
+  const [catalog, setCatalog] = useState<InternalLoadCatalogEntry[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchInternalLoadsCatalog()
+      .then((data) => {
+        if (!cancelled) setCatalog(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setCatalogError(err instanceof Error ? err.message : 'Impossible de charger le catalogue des équipements.');
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function toggleItem(template: InternalLoadCatalogEntry) {
     const exists = study.equipment.find((e) => e.id === template.id);
     if (exists) {
       updateStudy(studyId, { equipment: study.equipment.filter((e) => e.id !== template.id) });
     } else {
-      updateStudy(studyId, { equipment: [...study.equipment, { ...template, selected: true }] });
+      const item: EquipmentItem = {
+        id: template.id,
+        productId: template.productId,
+        label: template.label,
+        category: template.category,
+        quantity: 1,
+        unitPowerW: template.unitPowerW,
+        usageHoursPerDay: template.usageHoursPerDay,
+        simultaneityPercent: template.simultaneityPercent,
+        selected: true,
+      };
+      updateStudy(studyId, { equipment: [...study.equipment, item] });
     }
   }
 
@@ -39,7 +75,12 @@ export function EquipmentStep() {
               <span>Durée</span>
               <span>Sélection</span>
             </div>
-            {CATALOG.map((item) => {
+            {catalogLoading && <p className="py-2.5 text-sm text-ink-faint">Chargement du catalogue…</p>}
+            {catalogError && <p className="py-2.5 text-sm text-red-600">{catalogError}</p>}
+            {!catalogLoading && !catalogError && catalog.length === 0 && (
+              <p className="py-2.5 text-sm text-ink-faint">Aucun équipement disponible dans le catalogue.</p>
+            )}
+            {catalog.map((item) => {
               const selected = !!study.equipment.find((e) => e.id === item.id);
               return (
                 <div key={item.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 py-2.5 text-sm">

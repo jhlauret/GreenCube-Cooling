@@ -46,3 +46,18 @@ WATTS_PER_BTU_H = 0.29307107
 MERCURE_ENGINE_CODE = "MERCURE"
 MERCURE_ENGINE_VERSION = "1.0.0"
 MERCURE_METHOD_VERSION = "1.0"
+
+# Additional natural-infiltration ACH contributed by voluntary door/window
+# opening, on top of the n50-derived or manually entered baseline
+# infiltration_ach. Each level is an explicit, versioned estimate (not a
+# measurement) — deliberately conservative and additive per opening type
+# (a door and a window being both "frequently" opened are two distinct air
+# paths, not a double count of the same one) so it can be revised without
+# touching call sites (GC-COOLING-12).
+OPENING_FREQUENCY_ACH_INCREMENT = {
+    "rare": 0.0,
+    "occasional": 0.03,
+    "frequent": 0.08,
+    "continuous": 0.15,
+}
+OPENING_INCREMENT_METHOD_VERSION = "1.0"

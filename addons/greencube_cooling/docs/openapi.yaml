@@ -1,0 +1,191 @@
+openapi: 3.0.3
+info:
+  title: GreenCube Cooling API
+  version: "1.0"
+  description: >
+    JSON API exposed by addons/greencube_cooling/controllers/api.py.
+    Odoo Community 18 is the business source of truth: the frontend never
+    stores studies, results, catalogs or prices — every route here reads or
+    writes through the Odoo ORM (models + ir.rule), never bypassing it.
+
+    This document must stay in sync with controllers/api.py. It documents
+    only routes that actually exist in the code — no aspirational/future
+    routes are included; see README_GC-COOLING-02_API_ODOO.md §22 for the
+    lot's scope limits (climate/solver remain governed by their own
+    dedicated lots, GC-COOLING-04/14/15).
+servers:
+  - url: /api/v1/greencube/cooling
+security:
+  - odooSession: []
+components:
+  securitySchemes:
+    odooSession:
+      type: apiKey
+      in: cookie
+      name: session_id
+      description: >
+        Odoo's standard session cookie (auth="user" on every non-worker
+        route). No separate token system is introduced — see "CSRF/CORS
+        strategy" below.
+  headers:
+    IfMatch:
+      description: >
+        Optimistic-locking header for PATCH /studies/{id}: the study's
+        write_date as last read by the client. A mismatch returns 409
+        COOLING_STUDY_VERSION_CONFLICT.
+      schema: { type: string }
+    IdempotencyKey:
+      description: >
+        Required-in-practice header for POST /studies/{id}/calculations.
+        Same key + same frozen study inputs -> the original result is
+        returned unchanged. Same key + different inputs -> 409
+        IDEMPOTENCY_CONFLICT.
+      schema: { type: string }
+  schemas:
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            field: { type: string, nullable: true }
+            section: { type: string, nullable: true }
+            action: { type: string, nullable: true }
+            request_id: { type: string }
+            fields:
+              type: object
+              description: Optional per-field validation detail (VALIDATION_ERROR only).
+              additionalProperties:
+                type: array
+                items: { type: string }
+paths:
+  /studies:
+    get:
+      summary: List studies visible to the current user/company (ir.rule-scoped)
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: search, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Paginated study summaries }
+        "401": { description: No session, $ref: '#/components/schemas/ErrorEnvelope' }
+    post:
+      summary: Create a new draft study owned by the current user/company
+      responses:
+        "201": { description: Created study }
+        "400": { description: Invalid JSON body }
+  /studies/{study_id}:
+    get:
+      summary: Read a single study (403 if not owned/visible per ir.rule)
+      responses: { "200": { description: Study }, "403": { description: Access denied }, "404": { description: Not found } }
+    patch:
+      summary: Partially update a draft study (optimistic locking via If-Match)
+      parameters:
+        - { $ref: '#/components/headers/IfMatch', name: If-Match, in: header }
+      responses:
+        "200": { description: Updated study }
+        "409": { description: Version conflict (stale If-Match) or study locked (validated) }
+        "422": { description: VALIDATION_ERROR — out-of-range field(s) }
+  /geocode:
+    get:
+      summary: Address search (rate-limited 30/minute/user)
+      parameters: [{ name: query, in: query, required: true, schema: { type: string } }]
+      responses: { "200": { description: Address matches }, "429": { description: Rate limit exceeded } }
+  /geo-context:
+    get:
+      summary: >
+        Climate/geo context for a coordinate pair (rate-limited 10/hour/user
+        — README specifies 10/hour/study, but this route is coordinate- not
+        study-scoped in the current implementation; documented deviation).
+      parameters:
+        - { name: latitude, in: query, required: true, schema: { type: number, minimum: -90, maximum: 90 } }
+        - { name: longitude, in: query, required: true, schema: { type: number, minimum: -180, maximum: 180 } }
+      responses:
+        "200": { description: Climate/geo context }
+        "502": { description: CLIMATE/GEO provider unavailable }
+        "429": { description: Rate limit exceeded }
+  /studies/{study_id}/confirm-location:
+    post:
+      summary: >
+        Confirm a resolved location (address search result, browser
+        position, or manual entry) and lock it into the study
+        (climate_confirmed=true), with provenance/precision/audit trail
+        (GC-COOLING-03). Rate-limited 10/minute/study. The only route
+        allowed to set climate_confirmed.
+      responses:
+        "200": { description: Updated study (location.location_provenance/precision/provider/resolved_at set) }
+        "403": { description: Access denied (not this user's/company's study) }
+        "404": { description: Study not found }
+        "409": { description: Study locked (validated) — create a revision first }
+        "422": { description: VALIDATION_ERROR (out-of-range coordinates) or GEO_INVALID_TIMEZONE }
+        "429": { description: Rate limit exceeded }
+  /thermal-specification-templates:
+    get:
+      summary: Standard GreenCube model catalog (standard_model=True only)
+  /studies/{study_id}/thermal-specification:
+    get: { summary: Read the study's thermal specification }
+    put:
+      summary: >
+        Fork a private thermal specification for the study (never edits a
+        shared standard_model=True catalog entry in place)
+      responses: { "200": { description: Updated spec }, "422": { description: VALIDATION_ERROR or THERMAL_SPEC_INVALID } }
+  /studies/{study_id}/occupancy-profile:
+    get: { summary: Read occupancy profile }
+    put: { summary: Upsert occupancy profile, responses: { "422": { description: VALIDATION_ERROR } } }
+  /studies/{study_id}/ventilation-profile:
+    get: { summary: Read ventilation profile }
+    put: { summary: Upsert ventilation profile, responses: { "422": { description: VALIDATION_ERROR } } }
+  /studies/{study_id}/shading:
+    get: { summary: List shading entries }
+    put: { summary: Replace all shading entries (full array) }
+  /studies/{study_id}/equipment-loads:
+    get: { summary: List equipment loads }
+    post: { summary: Create an equipment load line }
+  /equipment-loads/{line_id}:
+    patch: { summary: Update an equipment load line (403 if not owned via study) }
+    delete: { summary: Delete an equipment load line (403 if not owned via study) }
+  /studies/{study_id}/revisions:
+    post: { summary: Create a new revision of a validated study }
+  /studies/{study_id}/validate:
+    post: { summary: Lock the study (validated state) if complete }
+  /studies/{study_id}/validation:
+    get: { summary: Structured completeness/quality report (never triggers the solver) }
+  /studies/{study_id}/assumptions/confirm:
+    post: { summary: Mark all non-confirmed provenance assumptions as user-confirmed }
+  /studies/{study_id}/snapshots:
+    post: { summary: Freeze an immutable calculation input snapshot }
+  /studies/{study_id}/calculations:
+    post:
+      summary: Create or idempotently reuse a calculation job (rate-limited 10/hour/study)
+      parameters:
+        - { $ref: '#/components/headers/IdempotencyKey', name: Idempotency-Key, in: header }
+      responses:
+        "201": { description: "{ job_id, status, result_id, engine, engine_version }" }
+        "409": { description: IDEMPOTENCY_CONFLICT — same key, different study inputs }
+        "422": { description: COOLING_CALCULATION_FAILED }
+        "429": { description: Rate limit exceeded }
+  /calculations/{job_id}:
+    get: { summary: Poll a calculation job's status }
+  /results/{result_id}:
+    get: { summary: Read an immutable calculation result (403 if not owned via study) }
+  /studies/{study_id}/results:
+    get: { summary: List all results ever produced for a study }
+  /equipment-catalog:
+    get: { summary: List cooling-equipment product templates }
+  /studies/{study_id}/equipment-recommendations:
+    post: { summary: Rank the catalog against the study's active result }
+  /studies/{study_id}/equipment-selections:
+    get: { summary: List equipment selections (immutable once superseded) }
+    post: { summary: Create/validate a new equipment selection, superseding any prior selected one }
+  /energyplus-jobs/claim:
+    post:
+      summary: >
+        Worker-only (auth=public + X-GreenCube-Worker-Key shared secret,
+        never a user session). Claims the next queued EnergyPlus job.
+      security: []
+  /energyplus-jobs/{job_id}/complete:
+    post:
+      summary: Worker-only. Reports simulation completion/failure and uploads artifacts.
+      security: []

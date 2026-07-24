@@ -13,6 +13,7 @@ import {
   createRevision,
   getStudy,
   getValidation,
+  markStudyReady,
   validateStudy,
   type BackendStudySummary,
   type ValidationReport,
@@ -73,6 +74,29 @@ export function ReviewStep() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [study.id]);
+
+  /** GC-COOLING-13 "faire passer l'étude au statut ready": deliberately a
+   * distinct call from handleCalculate() — it never launches the solver,
+   * it only asks the backend to re-check the structured validation and,
+   * if there are no blocking issues, flip the study's state to `ready`.
+   * A 422 here (backend disagrees with what the review screen displays)
+   * surfaces as the same syncError banner used everywhere else on this
+   * page, never a silent local override of readiness. */
+  async function handleMarkReady() {
+    if (!study.backendId) return;
+    setLifecycleBusy(true);
+    setSyncError(null);
+    try {
+      const summary = await markStudyReady(study.backendId);
+      setBackendStudy(summary);
+      const report = await getValidation(study.backendId);
+      setValidation(report);
+    } catch (err) {
+      setSyncError(err instanceof ApiError ? err.message : "Impossible de préparer l'étude pour le calcul.");
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
 
   async function handleValidateStudy() {
     if (!study.backendId) return;
@@ -136,7 +160,9 @@ export function ReviewStep() {
       );
       const idempotencyKey = crypto.randomUUID();
       const job = await calculate(backendId, idempotencyKey);
-      navigate(`/cooling/studies/${study.id}/results`, { state: { resultId: job.result_id } });
+      navigate(`/cooling/studies/${study.id}/results`, {
+        state: { resultId: job.result_id, jobId: job.job_id },
+      });
     } catch (err) {
       setSyncError(err instanceof ApiError ? err.message : "Impossible de lancer le calcul.");
     } finally {
@@ -196,6 +222,15 @@ export function ReviewStep() {
               {backendStudy.parent_study_id && ' (créée à partir d\'une étude verrouillée)'}
             </span>
           </div>
+          {(backendStudy.state === 'draft' || backendStudy.state === 'incomplete') && (
+            <Button
+              variant="secondary"
+              disabled={lifecycleBusy || blockingIssues.length > 0}
+              onClick={() => void handleMarkReady()}
+            >
+              {lifecycleBusy ? 'Préparation…' : 'Marquer l\'étude prête pour le calcul'}
+            </Button>
+          )}
           {backendStudy.state === 'calculated' && (
             <Button variant="secondary" disabled={lifecycleBusy} onClick={() => void handleValidateStudy()}>
               {lifecycleBusy ? 'Validation…' : 'Valider cette étude (verrouille les données)'}
@@ -237,7 +272,12 @@ export function ReviewStep() {
         <ReviewCard title="Usage" confirmed>
           <ReviewRow label="Type" value={study.usage.usageType} />
           <ReviewRow label="Occupation" value={`${study.usage.usualOccupants} personnes`} />
+          <ReviewRow label="Pic d'occupation" value={`${study.usage.maximumOccupants} personnes`} />
           <ReviewRow label="Horaires" value={`${study.usage.occupancyStartHour}h - ${study.usage.occupancyEndHour}h`} />
+          <ReviewRow
+            label="Jours actifs"
+            value={`${Object.values(study.usage.occupiedWeekdays).filter(Boolean).length} / 7`}
+          />
         </ReviewCard>
 
         <ReviewCard title="Équipements" estimated>

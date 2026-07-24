@@ -37,6 +37,45 @@ class GreencubeCoolingSolverVersion(models.Model):
                 raise UserError("A solver version already used by a result cannot have its coefficients modified.")
         return super().write(vals)
 
+    def unlink(self):
+        # GC-COOLING-01 §16.3: "une version utilisée ne peut pas être
+        # supprimée". write() above already blocked touching
+        # coefficients_json once used, but unlink() was never guarded, so a
+        # manager could still delete a solver version referenced by an
+        # existing (immutable) result — orphaning result.solver_version_id
+        # and destroying the audit trail of which formulas produced it.
+        if any(version.is_used for version in self):
+            raise UserError("A solver version used by at least one result cannot be deleted.")
+        return super().unlink()
+
+    def _provision_for_companies(self, companies):
+        """Ensures every company in `companies` has its own active MERCURE
+        solver version, copied from whichever company already has one.
+
+        company_id is required=True here (real per-company data, same
+        convention as greencube.thermal.specification) and
+        data/solver_version_data.xml only ever creates one row, for the
+        company active at install time — so without this, any other
+        company in the database could never run a single calculation
+        (SOLVER_VERSION_MISSING, found by testing a real non-superuser user
+        of a second company). Called from res.company.create() (new
+        companies) and from post_init_hook/migrations (existing companies).
+        Idempotent: a company that already has one is left untouched.
+        """
+        reference = self.sudo().search([("code", "=", "MERCURE"), ("state", "=", "active")], limit=1)
+        if not reference:
+            return
+        for company in companies:
+            if self.sudo().search([("code", "=", "MERCURE"), ("company_id", "=", company.id)], limit=1):
+                continue
+            # state must be passed explicitly: Odoo resets any field named
+            # "state" to its default on copy() unless told otherwise (see
+            # odoo/fields.py, "by default, state fields should be reset on
+            # copy") — without this, the provisioned row would silently
+            # come out as "draft" and SOLVER_VERSION_MISSING would still
+            # fire, defeating the whole point of this method.
+            reference.sudo().copy({"company_id": company.id, "state": "active"})
+
     @api.constrains("state", "code", "company_id")
     def _check_single_active(self):
         for version in self:

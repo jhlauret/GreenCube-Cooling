@@ -48,13 +48,33 @@
         <field name="name">GreenCube Thermal Specification: user edits own private specs</field>
         <field name="model_id" ref="model_greencube_thermal_specification"/>
         <field name="domain_force">
-            ['&amp;', ('standard_model', '=', False), '|', ('study_ids', '=', False), ('study_ids.user_id', '=', user.id)]
+            ['&amp;', ('company_id', 'in', company_ids),
+             '&amp;', ('standard_model', '=', False),
+                  '|', ('study_ids', '=', False), ('study_ids.user_id', '=', user.id)]
         </field>
         <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
         <field name="perm_read" eval="False"/>
         <field name="perm_write" eval="True"/>
         <field name="perm_create" eval="True"/>
         <field name="perm_unlink" eval="True"/>
+    </record>
+
+    <!-- Manager-only: without this, a Manager (who is also a member of
+         group_greencube_cooling_user via implied_ids) had NO ir.rule
+         granting write/create/unlink on standard_model=True catalog
+         templates — the only write-enabling rule above explicitly
+         excludes standard_model=True, so the ACL's perm_write=1/
+         perm_create=1 for the manager group was silently neutered by
+         ir.rule and every catalog edit raised AccessError (found while
+         verifying GC-COOLING-01 pt 4 "modèles standards administrables
+         uniquement par les managers" — "uniquement" was true, but managers
+         themselves were also locked out). This rule restores full access
+         for the manager group, still bounded to their own companies. -->
+    <record id="rule_thermal_specification_manager_full" model="ir.rule">
+        <field name="name">GreenCube Thermal Specification: manager manages all specs of own companies</field>
+        <field name="model_id" ref="model_greencube_thermal_specification"/>
+        <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_manager'))]"/>
     </record>
 
     <record id="rule_thermal_facade_company" model="ir.rule">
@@ -72,15 +92,24 @@
         <field name="name">GreenCube Thermal Facade: user edits facades of own private specs</field>
         <field name="model_id" ref="model_greencube_thermal_facade"/>
         <field name="domain_force">
-            ['&amp;', ('thermal_specification_id.standard_model', '=', False),
-             '|', ('thermal_specification_id.study_ids', '=', False),
-                  ('thermal_specification_id.study_ids.user_id', '=', user.id)]
+            ['&amp;', ('thermal_specification_id.company_id', 'in', company_ids),
+             '&amp;', ('thermal_specification_id.standard_model', '=', False),
+                  '|', ('thermal_specification_id.study_ids', '=', False),
+                       ('thermal_specification_id.study_ids.user_id', '=', user.id)]
         </field>
         <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
         <field name="perm_read" eval="False"/>
         <field name="perm_write" eval="True"/>
         <field name="perm_create" eval="True"/>
         <field name="perm_unlink" eval="True"/>
+    </record>
+
+    <!-- Mirrors rule_thermal_specification_manager_full: same gap, same fix. -->
+    <record id="rule_thermal_facade_manager_full" model="ir.rule">
+        <field name="name">GreenCube Thermal Facade: manager manages all facades of own companies</field>
+        <field name="model_id" ref="model_greencube_thermal_facade"/>
+        <field name="domain_force">[('thermal_specification_id.company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_manager'))]"/>
     </record>
 
     <!-- Sub-resources of a study (occupancy, equipment, ventilation,
@@ -204,6 +233,19 @@
         <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
     </record>
 
+    <!-- greencube.cooling.commercial.capacity had NO ir.rule at all: its
+         company_id is not required (a False/global tier is valid), but a
+         per-company tier (company_id set) was readable/writable by a
+         Manager of ANY company with no boundary — found while reviewing
+         multi-company behaviour for GC-COOLING-01 pt 6. Global rule so it
+         also protects the read-only User ACL, not just the Manager. -->
+    <record id="rule_commercial_capacity_company" model="ir.rule">
+        <field name="name">GreenCube Commercial Capacity: multi-company or global tier</field>
+        <field name="model_id" ref="model_greencube_cooling_commercial_capacity"/>
+        <field name="domain_force">['|', ('company_id', '=', False), ('company_id', 'in', company_ids)]</field>
+        <field name="groups" eval="[]"/>
+    </record>
+
     <record id="rule_solver_version_company" model="ir.rule">
         <field name="name">GreenCube Cooling Solver Version: multi-company</field>
         <field name="model_id" ref="model_greencube_cooling_solver_version"/>
@@ -211,11 +253,39 @@
         <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
     </record>
 
+    <!-- GC-COOLING-18 audit finding: this rule used to be the *only* one
+         for the model and was scoped to group_greencube_cooling_user
+         instead of being global, so it acted purely as a per-group OR
+         domain, not an AND'd boundary — and with no own_user rule beside
+         it, any User-group member could read/write another user's
+         equipment selection as long as it belonged to the same company
+         (IDOR, same class of bug already fixed for equipment_load/
+         ventilation_profile/occupancy_profile/calculation_snapshot above).
+         Made global (groups=[]) so it is ANDed with everything, mirroring
+         rule_cooling_study_company. -->
     <record id="rule_equipment_selection_company" model="ir.rule">
         <field name="name">GreenCube Cooling Equipment Selection: multi-company</field>
         <field name="model_id" ref="model_greencube_cooling_equipment_selection"/>
         <field name="domain_force">[('company_id', 'in', company_ids)]</field>
+        <!-- Explicit "clear all" (6, 0, []) rather than a bare `eval="[]"`:
+             on module *upgrade* (not just fresh install) a many2many field
+             with no commands leaves the previously-stored group untouched,
+             so an already-installed database would keep this rule scoped
+             to group_greencube_cooling_user instead of actually becoming
+             global — caught by the upgrade test against gc_test_db. -->
+        <field name="groups" eval="[(6, 0, [])]"/>
+    </record>
+    <record id="rule_equipment_selection_own_user" model="ir.rule">
+        <field name="name">GreenCube Cooling Equipment Selection: user owns via study</field>
+        <field name="model_id" ref="model_greencube_cooling_equipment_selection"/>
+        <field name="domain_force">[('study_id.user_id', '=', user.id)]</field>
         <field name="groups" eval="[(4, ref('group_greencube_cooling_user'))]"/>
+    </record>
+    <record id="rule_equipment_selection_technician_company" model="ir.rule">
+        <field name="name">GreenCube Cooling Equipment Selection: technician sees all company studies</field>
+        <field name="model_id" ref="model_greencube_cooling_equipment_selection"/>
+        <field name="domain_force">[(1, '=', 1)]</field>
+        <field name="groups" eval="[(4, ref('group_greencube_cooling_technician'))]"/>
     </record>
 
     <record id="rule_calculation_snapshot_company" model="ir.rule">

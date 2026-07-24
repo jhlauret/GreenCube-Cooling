@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!--
+        GC-COOLING-15: reclaims EnergyPlus jobs whose worker never reported
+        back within the stall timeout (worker crashed / killed / lost
+        network mid-simulation). This cron ONLY flips job bookkeeping
+        (energyplus_processing_status/claimed_at/attempt_count) via
+        _requeue_stalled_energyplus_jobs() — it never calls
+        run_energyplus_simulation() and never touches EnergyPlus itself, so
+        it does not violate the "never run EnergyPlus inside the Odoo
+        web/cron process" rule. Disabled by default is not required since
+        this is pure bookkeeping, not simulation execution — but it is a
+        no-op whenever there is nothing stalled, and inexpensive even at
+        scale (single indexed search).
+    -->
+    <record id="ir_cron_requeue_stalled_energyplus_jobs" model="ir.cron">
+        <field name="name">GreenCube Cooling: requeue stalled EnergyPlus jobs</field>
+        <field name="model_id" ref="model_greencube_cooling_calculation_job"/>
+        <field name="state">code</field>
+        <field name="code">model._requeue_stalled_energyplus_jobs()</field>
+        <field name="interval_number">5</field>
+        <field name="interval_type">minutes</field>
+        <field name="active">True</field>
+    </record>
+</odoo>

@@ -4,10 +4,66 @@ Référence : `security/ir.model.access.csv` (ACL par modèle/groupe) et
 `security/greencube_cooling_rules.xml` (`ir.rule`, propriété par
 enregistrement). Ce document décrit l'état après le lot de stabilisation
 du 2026-07-20 (suite à `Audit_fonctionnel_GreenCube_Cooling_18-07-2026.md`,
-prompts P0-03/P0-05/GC-COOLING-01).
+prompts P0-03/P0-05/GC-COOLING-01), **mis à jour le 2026-07-21** lors de
+l'exécution formelle du prompt GC-COOLING-01 (module version `18.0.5.0.0`).
 
-Non couvert par ce document : ce n'est pas une preuve d'exécution. Les
-`ir.rule`/ACL ci-dessous ont été relus statiquement (XML/CSV valides,
+## Correctifs du 2026-07-21 (GC-COOLING-01)
+
+Trouvés en relisant `greencube_cooling_rules.xml` règle par règle contre la
+matrice ci-dessous (donc avant toute exécution réelle des tests) :
+
+1. **Manager bloqué sur le catalogue standard.** `rule_thermal_specification_user_owns_private`
+   et son miroir `rule_thermal_facade_user_owns_private` sont scopées au
+   groupe `group_greencube_cooling_user`, et un Manager est aussi membre de
+   ce groupe (via `implied_ids`). Comme ces règles excluent explicitement
+   `standard_model=True`, c'était la SEULE règle non globale octroyant
+   write/create/unlink sur ces deux modèles pour un Manager : un Manager
+   n'avait donc en pratique aucun moyen d'éditer un modèle GreenCube
+   standard (`standard_model=True`), malgré une ACL manager `1,1,1,1` —
+   contredisant GC-COOLING-01 pt 4. Ajout de
+   `rule_thermal_specification_manager_full` et
+   `rule_thermal_facade_manager_full` (groupe manager, domaine
+   `company_id in company_ids`, sans restriction sur `standard_model`).
+2. **`greencube.cooling.commercial.capacity` sans cloisonnement société.**
+   Aucun `ir.rule` n'existait pour ce modèle : un Manager de la société A
+   pouvait lire/modifier/supprimer un palier de capacité `company_id`
+   appartenant à la société B. Ajout de `rule_commercial_capacity_company`
+   (règle globale, `company_id = False OR company_id in company_ids`, pour
+   préserver les paliers globaux non rattachés à une société).
+3. **`greencube.cooling.solver.version.unlink()` non gardé.** `write()`
+   bloquait déjà la modification de `coefficients_json` une fois la
+   version utilisée par un résultat (`is_used`), mais `unlink()` n'était
+   pas surchargé : une version utilisée pouvait être supprimée, cassant
+   `result.solver_version_id` et l'auditabilité, contredisant GC-COOLING-01
+   §16.3 ("une version utilisée ne peut pas être supprimée"). `unlink()`
+   lève désormais `UserError` si `is_used`.
+4. **Domaine de propriété des spécifications privées non borné à la
+   société.** `rule_thermal_specification_user_owns_private` (et son
+   miroir façade) autorisait l'édition d'une spécification privée
+   **pas encore rattachée à une étude** (`study_ids = False`) par
+   n'importe quel User de n'importe quelle société — l'ancrage société
+   n'existait qu'indirectement, une fois la spécification liée à une étude
+   de son propriétaire. Ajout explicite de `('company_id', 'in',
+   company_ids)` en tête du domaine des deux règles.
+5. **Index manquants sur les clés de recherche de l'API** (GC-COOLING-01
+   pt 11) : `greencube.cooling.study.user_id`, `.state`, et
+   `greencube.cooling.equipment.selection.result_id` n'étaient pas
+   indexés alors que l'API filtre dessus (`/studies?status=...`, liste
+   "mes études", résolution de sélection par résultat). `index=True`
+   ajouté aux trois champs — changement purement additif, aucun script de
+   migration nécessaire (voir `migrations/README.md` : Odoo crée l'index
+   via `_auto_init` au prochain `-u`).
+
+Aucun de ces cinq points n'était couvert par un test avant ce lot ; les
+tests correspondants ont été ajoutés dans
+`tests/test_cooling_study.py::TestCoolingStudySecurity` (voir §"Tests
+ajoutés" en bas de ce document) et **exécutés réellement** contre
+l'instance Docker `gc_odoo`/`gc_pg` (voir le rapport final de session pour
+la commande et la sortie).
+
+Non couvert par ce document : ce n'est pas une preuve d'exécution à elle
+seule pour les sections écrites le 2026-07-20. Les `ir.rule`/ACL ci-dessous
+ont été relus statiquement (XML/CSV valides,
 lecture du code) mais **pas rejoués sur une instance Odoo réelle** dans cet
 environnement (aucun Odoo installé ici — voir `README.md`). La procédure de
 validation manuelle en bas de ce document doit être exécutée avant toute
@@ -113,6 +169,32 @@ diverger).
    même opération mais réussir à créer sa propre spécification privée.
 8. Exécuter les `TransactionCase` existants dans `tests/` et les compléter
    avec les scénarios 1 à 7 ci-dessus s'ils manquent.
+
+## Tests ajoutés (GC-COOLING-01, 2026-07-21)
+
+Dans `tests/test_cooling_study.py::TestCoolingStudySecurity` :
+
+- `test_user_can_create_and_modify_own_private_spec_and_children` : le
+  wizard complet (étude + spécification privée + façade + occupation) est
+  réalisable par un simple User sans `AccessError`.
+- `test_manager_cannot_create_private_spec_shortcut_but_can_edit_catalog` :
+  confirme le correctif §1 ci-dessus (Manager édite le catalogue standard ;
+  User échoue dessus).
+- `test_user_a_cannot_read_or_write_user_a2_child_objects` : isolation par
+  propriétaire **au sein de la même société** (pas seulement inter-société)
+  sur étude, profil d'occupation et ligne d'équipement.
+- `test_manager_can_manage_company_studies_without_becoming_owner` :
+  le Manager agit sur une étude privée sans que `user_id` change.
+- `test_manager_cannot_access_company_b_objects` : le Manager reste borné
+  à ses propres sociétés.
+- `test_validated_equipment_selection_is_immutable` : `write()`/`unlink()`
+  sur une sélection `state=validated` lèvent `UserError`.
+- `test_used_solver_version_cannot_be_deleted` : confirme le correctif §3.
+
+Ces tests s'ajoutent à ceux déjà présents (immuabilité résultat/snapshot,
+verrouillage de spécification utilisée, révision, multi-société de base).
+Procédure d'exécution réelle et résultat : voir le rapport final de
+session (recherche `GC-COOLING-01` dans l'historique git).
 
 ## Limites connues
 

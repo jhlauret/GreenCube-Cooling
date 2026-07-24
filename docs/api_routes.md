@@ -56,11 +56,124 @@ Toutes les routes renvoient l'enveloppe standard :
 | Méthode | Route | Effet | Notes |
 |---|---|---|---|
 | GET/PUT | `/studies/<id>/thermal-specification` | Spécification thermique + façades (remplacement complet des façades au PUT) | PUT force un fork privé si la spec est `standard_model=True` ou partagée |
-| GET/PUT | `/studies/<id>/occupancy-profile` | Profil d'occupation (unique par étude) | |
+| GET/PUT | `/studies/<id>/occupancy-profile` | Profil d'occupation (unique par étude) | 409 `INVALID_STATE` si l'étude est `validated` (créer une révision) |
 | GET/PUT | `/studies/<id>/ventilation-profile` | Profil de ventilation (unique par étude) | |
 | GET/PUT | `/studies/<id>/shading` | Protections solaires (remplacement complet de la liste au PUT) | |
 | GET/POST | `/studies/<id>/equipment-loads` | Liste / création d'une ligne d'apport interne | |
 | PATCH/DELETE | `/equipment-loads/<line_id>` | Modifie / supprime une ligne par id direct | Protégé uniquement par `ir.rule` (pas de re-vérification de propriété dans le contrôleur — voir `docs/cooling_security_matrix.md`) |
+| GET | `/equipment-load-catalog` | Catalogue Odoo des apports internes de référence (ordinateur, écran, éclairage LED, électroménager, batterie, onduleur, ...) proposés par l'écran Équipements | `product.template` où `is_internal_load_equipment=True` — jamais codé en dur côté frontend (GC-COOLING-11) |
+
+### Orientation, vitrages, protections → simplifications MERCURE (GC-COOLING-09)
+
+- **Azimut canonique** : convention `0°=Nord`, sens horaire (`N`, `NE`, `E`,
+  `SE`, `S`, `SO`, `O`, `NO` = `0/45/90/135/180/225/270/315°`). Le frontend
+  ne stocke qu'une orientation cardinale (`CardinalDirection`) et fait
+  pivoter ses 4 emplacements de façade fixes (`north/south/east/west` =
+  slots UI « avant/droite/arrière/gauche », pas des points cardinaux figés)
+  via `rotatedOrientation()` (`frontend/src/sync/syncStudy.ts`) avant de les
+  envoyer comme `orientation` réelle de chaque `greencube.thermal.facade`.
+  Le backend ne recalcule pas les azimuts : il fait confiance à
+  l'orientation déjà résolue par le frontend, mais reste l'autorité pour la
+  cohérence géométrique (`glazing_area_m2 <= gross_area_m2`, façade unique
+  par orientation).
+- **Protections solaires** : chaque type (`internal_blind`,
+  `external_blind`, `brise_soleil`, `overhang`, `natural`, `building`,
+  `mountain`) a un `efficiency_percent` propre — plus aucune conversion
+  générique vers `external_blind`. Le calcul MERCURE lui-même ne lit
+  toutefois que `greencube.thermal.facade.default_shading_factor` (un
+  facteur constant par façade, sans variation horaire) : les enregistrements
+  `greencube.cooling.shading` (`shading_ids`) portent la donnée plus riche
+  (type, créneau `start_hour`/`end_hour`, `automatic`, `confirmed`,
+  provenance) utilisée pour la validation/l'audit et copiée lors d'une
+  révision, mais **n'alimentent pas encore directement le moteur physique**
+  — c'est la simplification MVP assumée ici (une seule protection
+  dominante par façade, sans calendrier dynamique dans le calcul rapide).
+  Une future intégration EnergyPlus/Honeybee est le point d'extension
+  naturel pour un calendrier de protection réellement dynamique.
+- **Gains solaires par façade** : `GET /results/<id>` expose
+  `solar_gain_by_facade` (`facade`, `area_m2`, `radiation_wm2`,
+  `solar_factor`, `protection_factor`, `gain_w`), une décomposition
+  informative de l'entrée agrégée `solar_glazing` de `breakdown` — jamais
+  additionnée par-dessus le total déjà présent dans `breakdown`/
+  `total_load_w`.
+
+### Usage, occupation et calendrier hebdomadaire (GC-COOLING-10)
+
+- **Calendrier structuré, pas de texte libre** : `active_monday` ..
+  `active_sunday` (booléens) sont la source de vérité du calendrier
+  hebdomadaire. `usage_days` (`Char`, ex. `"Mon-Fri"`) est conservé en
+  lecture seule pour compatibilité d'affichage mais n'est plus écrit par le
+  frontend ni lu par le moteur MERCURE.
+- **Passage de minuit** : `start_hour`/`end_hour` sont des heures `0..24`.
+  Si `end_hour < start_hour`, la plage traverse minuit et la durée
+  occupée est `(24 - start_hour) + end_hour` ; si égaux, la durée est `0`
+  (profil inoccupé, ex. local technique). `crosses_midnight` et
+  `daily_occupied_hours` sont des champs calculés exposés en lecture.
+- **`occupancy_fraction`** (calculé, `daily_occupied_hours / 24`) est
+  désormais ce que `cooling_study.py`'s `_build_mercure_input()` envoie
+  dans `Occupancy.occupancy_fraction` — auparavant figé à `1.0`, ce qui
+  rendait les horaires/jours sans aucun effet sur les gains sensibles/
+  latents calculés. Simplification volontairement identique à celle déjà
+  utilisée pour `equipment_load.usage_hours_per_day / 24` et
+  `lighting_usage_fraction` (moyenne journalière en régime permanent) —
+  ne factorise pas le nombre de jours actifs par semaine, par cohérence
+  avec ces deux autres composantes qui n'ont pas non plus de notion de
+  variation hebdomadaire.
+- **Bornes** : `usual_occupants` 0–500, `maximum_occupants` 0–1000
+  (`api_validation.FIELD_LIMITS`, mêmes bornes en contrainte modèle), et
+  `maximum_occupants >= usual_occupants`.
+- **Profil unique par étude** : `occupancy_profile_ids` est un `One2many`
+  (extensible à un futur modèle multi-zone) mais seul le premier
+  enregistrement (`[:1]`) est jamais lu — MVP à profil global unique,
+  documenté explicitement plutôt que silencieusement supposé.
+- **Verrouillage** : `greencube.cooling.occupancy.profile.write()`/
+  `.unlink()` refusent toute modification (hors `provenance`) une fois
+  l'étude `validated`, miroir du verrou `greencube.cooling.study.write()`
+  qui ne couvrait jamais ce sous-modèle — créer une révision à la place.
+- **Mapping Honeybee/EnergyPlus** : `services/mercure/honeybee_translator.py`
+  ne consomme que `occupancy_schedule_fraction` (un nombre unique par
+  scénario climatique, pas un horaire complet 8760h) — les champs
+  `active_<weekday>`/`start_hour`/`end_hour` du modèle Odoo n'alimentent
+  pas encore un vrai calendrier Honeybee `People`/`ScheduleRuleset` heure
+  par heure ; c'est une simplification MVP documentée, pas un mapping
+  perdu.
+
+### Équipements, éclairage et apports internes (GC-COOLING-11)
+
+- **Catalogue jamais codé en dur** : la liste des apports internes de
+  référence proposés par l'écran Équipements (ordinateur portable, écran,
+  imprimante, serveur, éclairage LED, machine à café, réseau, batterie,
+  onduleur) vient exclusivement de `GET /equipment-load-catalog`
+  (`product.template` où `is_internal_load_equipment=True`). Avant cette
+  version, ce catalogue était une constante TypeScript
+  (`frontend/src/equipment/internalLoadsCatalog.ts`) — sans lien avec
+  Odoo, non versionnable, non corrigeable sans déploiement frontend.
+- **Liaison catalogue → ligne d'étude** : à l'ajout, `product_id` (déjà un
+  champ existant sur `greencube.cooling.equipment.load`) est désormais
+  effectivement transmis par le frontend ; une ligne rechargée est
+  reliée à sa carte catalogue par `product_id` (identité fiable), avec un
+  repli sur la correspondance par nom pour les lignes historiques créées
+  avant ce changement.
+- **Catégories** : `equipment_load.category` (`it`, `lighting`,
+  `appliance`, `kitchen`, `network`, `battery`, `inverter`, `medical`,
+  `machine`, `other`) est la référence ; le type frontend
+  `EquipmentItem.category` a été élargi pour correspondre exactement
+  (auparavant limité à 5 valeurs, `battery`/`inverter` étaient repliés
+  sur `other`).
+- **Mapping solver rapide (MERCURE)** : `cooling_study.py`'s
+  `_build_mercure_input()` calcule déjà `operating_fraction` depuis
+  `usage_hours_per_day / 24` (simplification en moyenne journalière,
+  cohérente avec `lighting_usage_fraction`/`occupancy_fraction`, GC-
+  COOLING-10) et un partage sensible/latent grossier
+  (`category == "other"` → 20 % latent, sinon 100 % sensible) — inchangé
+  par ce lot ; un partage sensible/latent/radiant/convectif par ligne
+  (README_GC-COOLING-11) reste une limite connue du MVP, pas un mapping
+  perdu.
+- **Mapping Honeybee/EnergyPlus** : `services/mercure/honeybee_translator.py`
+  dérive `ElectricEquipment`/`Lights` depuis `EquipmentLoad`/`Lighting`
+  (`operating_fraction`, `fraction_dissipated_in_zone` comme fraction
+  perdue = `1 - fraction_dissipated_in_zone`) ; aucune fraction
+  radiante/convective distincte n'est encore modélisée séparément.
 
 ## Snapshot, calcul, résultats
 

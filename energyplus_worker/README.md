@@ -85,16 +85,33 @@ routes server-side.
   fabricate a result.
 - No durable queue (Redis/RQ/Celery/...): the "queue" is just the
   `queued_for_worker` rows in `greencube.cooling.calculation.job`, claimed
-  one at a time over HTTP. There is no dead-letter mechanism beyond the
-  job staying `simulation_failed`/`simulation_unavailable` — an operator
-  has to notice and re-queue manually today.
+  one at a time over HTTP via `SELECT ... FOR UPDATE SKIP LOCKED`
+  (`_claim_next_for_worker` in `models/calculation_job.py`), which is what
+  actually guarantees a single worker per job under concurrency — a plain
+  ORM `search()+write()` does not. A stalled claim (worker crashed/killed
+  after claiming but before calling `/complete`) is reclaimed by the
+  `ir.cron` "GreenCube Cooling: requeue stalled EnergyPlus jobs" (every 5
+  minutes, `_requeue_stalled_energyplus_jobs`), up to `max_attempt_count`
+  (default 3) attempts, after which the job is permanently marked
+  `simulation_failed` (dead-letter) rather than retried forever. This cron
+  only flips job bookkeeping — it never calls `run_energyplus_simulation`
+  itself, so it does not reintroduce in-process execution. There is still
+  no heartbeat *during* a run (see below), only stall detection based on
+  `claimed_at` age.
 - No per-job execution timeout around `run_energyplus_simulation` itself
-  (only the outer HTTP calls have a timeout). Irrelevant while that
-  function always raises immediately, but would need a real subprocess
-  timeout (e.g. `subprocess.run(..., timeout=...)`) once an actual
-  EnergyPlus binary is wired in.
+  (only the outer HTTP calls have a timeout), and no true heartbeat: the
+  worker makes one blocking claim -> run -> complete call and never pings
+  progress mid-run, so the Odoo-side stall detector can only notice a
+  crashed worker after `claimed_at` ages past the timeout, not sooner.
+  Irrelevant while that function always raises immediately, but would need
+  a real subprocess timeout (e.g. `subprocess.run(..., timeout=...)`) and
+  a mid-run heartbeat call once an actual EnergyPlus binary is wired in.
 - No sandboxing beyond "runs as an unprivileged OS user with no DB
   credentials" — no container/seccomp/network-namespace isolation.
+- Cancellation (`POST /calculations/<job_id>/cancel`) only works while a
+  job is still `queued_for_worker`; once a worker has claimed it there is
+  no subprocess handle to signal, so cancelling a running job is refused
+  (409) rather than faked.
 
 ## Tests
 

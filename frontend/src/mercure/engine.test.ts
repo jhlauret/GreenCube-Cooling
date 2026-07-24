@@ -2,6 +2,63 @@ import { describe, expect, it } from 'vitest';
 import { runMercure } from './engine';
 import { achToM3h, positiveCoolingDeltaT, wattsToBtuPerHour, wattsToKw } from './conversions';
 import { studioStandardInput, westGlazedOfficeInput } from './fixtures';
+import golden from './golden_reference';
+
+/** Relative tolerance for TS-vs-Python numeric conformance (GC-COOLING-14
+ * pt.5): both are pure-function ports of the same formulas over the same
+ * fixtures, so they should agree far tighter than this, but floating-point
+ * summation order can differ slightly between the two implementations. */
+const RELATIVE_TOLERANCE = 1e-6;
+
+function assertClose(actual: unknown, expected: unknown, path: string): void {
+  if (expected !== null && typeof expected === 'object' && !Array.isArray(expected)) {
+    for (const [key, value] of Object.entries(expected as Record<string, unknown>)) {
+      assertClose((actual as Record<string, unknown>)?.[key], value, `${path}.${key}`);
+    }
+  } else if (typeof expected === 'number') {
+    const tolerance = Math.max(Math.abs(expected) * RELATIVE_TOLERANCE, 1e-9);
+    expect(actual as number, path).toBeGreaterThanOrEqual(expected - tolerance);
+    expect(actual as number, path).toBeLessThanOrEqual(expected + tolerance);
+  } else {
+    expect(actual, path).toBe(expected);
+  }
+}
+
+function summarize(result: ReturnType<typeof runMercure>) {
+  return {
+    engineCode: result.engineCode,
+    engineVersion: result.engineVersion,
+    governingScenarioCode: result.governingScenarioCode,
+    recommendedCapacityW: result.recommendedCapacityW,
+    recommendedCapacityKw: result.recommendedCapacityKw,
+    recommendedCapacityBtuH: result.recommendedCapacityBtuH,
+    scenarios: Object.fromEntries(
+      result.scenarioResults.map((s) => [
+        s.scenarioCode,
+        {
+          sensibleLoadW: s.sensibleLoadW,
+          latentLoadW: s.latentLoadW,
+          totalLoadW: s.totalLoadW,
+          shr: s.shr,
+          marginW: s.marginW,
+          recommendedLoadW: s.recommendedLoadW,
+        },
+      ]),
+    ),
+  };
+}
+
+describe('TS/Python conformance (golden reference)', () => {
+  it('matches the Python engine for the standard studio', () => {
+    const actual = summarize(runMercure(studioStandardInput()));
+    assertClose(actual, (golden as any).studioStandard, 'studioStandard');
+  });
+
+  it('matches the Python engine for the west-glazed office', () => {
+    const actual = summarize(runMercure(westGlazedOfficeInput()));
+    assertClose(actual, (golden as any).westGlazedOffice, 'westGlazedOffice');
+  });
+});
 
 describe('conversions', () => {
   it('converts W to kW', () => {

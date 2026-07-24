@@ -36,6 +36,11 @@ class GreencubeCoolingResult(models.Model):
     confidence_score = fields.Float(digits=(4, 3))
     warnings_json = fields.Text()
     main_load_drivers_json = fields.Text()
+    # Per-facade decomposition of the aggregate "solar_glazing" breakdown
+    # entry (see greencube.cooling.result.component), so the UI can show
+    # which orientation actually drives the solar load instead of only a
+    # single blended total (GC-COOLING-09 pt.11).
+    solar_gain_by_facade_json = fields.Text()
     duration_ms = fields.Integer()
     snapshot_hash = fields.Char(index=True)
     idempotency_key = fields.Char(index=True)

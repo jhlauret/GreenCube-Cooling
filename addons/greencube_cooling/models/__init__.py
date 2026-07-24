@@ -16,3 +16,6 @@ from . import geo_cache
 from . import climate_dataset
 from . import calculation_job
 from . import simulation_artifact
+from . import res_company
+from . import api_rate_limit
+from . import ir_http

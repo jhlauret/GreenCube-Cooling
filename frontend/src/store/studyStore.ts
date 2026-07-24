@@ -93,13 +93,24 @@ export const useUiStore = create<UiState>((set) => ({
 interface SyncStatusState {
   saving: Record<string, boolean>;
   errors: Record<string, string | null>;
+  /**
+   * True once a PATCH for this study answered 409 COOLING_STUDY_VERSION_CONFLICT
+   * (see api/study.ts's `If-Match`). Kept separate from `errors` because a
+   * conflict is not retried automatically like a transient network error —
+   * it needs an explicit user decision (reload from Odoo), per
+   * GC-COOLING-06 §17 "ne pas écraser / afficher un dialogue".
+   */
+  conflicts: Record<string, boolean>;
   setSaving: (id: string, saving: boolean) => void;
   setError: (id: string, message: string | null) => void;
+  setConflict: (id: string, conflict: boolean) => void;
 }
 
 export const useSyncStatusStore = create<SyncStatusState>((set) => ({
   saving: {},
   errors: {},
+  conflicts: {},
   setSaving: (id, saving) => set((state) => ({ saving: { ...state.saving, [id]: saving } })),
   setError: (id, message) => set((state) => ({ errors: { ...state.errors, [id]: message } })),
+  setConflict: (id, conflict) => set((state) => ({ conflicts: { ...state.conflicts, [id]: conflict } })),
 }));

@@ -141,6 +141,26 @@ class MercureInput:
     margin_fraction: float
 
 
+@dataclass(frozen=True)
+class FacadeSolarGain:
+    """Per-facade share of the aggregate 'solar_glazing' breakdown entry.
+
+    Kept separate from ComponentBreakdownEntry/breakdown (which drives the
+    scenario's sensible/latent/total load sums) so surfacing it never
+    double-counts the total load: it is purely an informative decomposition
+    of the same `solar_glazing` total already included once in `breakdown`
+    (GC-COOLING-09 pt.11: "rendre visibles dans les résultats les
+    principaux gains solaires par façade").
+    """
+
+    facade: Facade
+    area_m2: float
+    radiation_wm2: float
+    solar_factor: float
+    protection_factor: float
+    gain_w: float
+
+
 @dataclass
 class ComponentBreakdownEntry:
     component_code: str
@@ -171,6 +191,7 @@ class MercureScenarioResult:
     breakdown: List[ComponentBreakdownEntry]
     warnings: List[MercureWarning]
     confidence_score: float
+    solar_gain_by_facade: List[FacadeSolarGain] = field(default_factory=list)
 
 
 @dataclass

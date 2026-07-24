@@ -26,6 +26,7 @@ from .conversions import (
 from .schemas import (
     ClimateScenario,
     ComponentBreakdownEntry,
+    FacadeSolarGain,
     MercureInput,
     MercureResult,
     MercureScenarioResult,
@@ -94,12 +95,29 @@ def _transmission_loads(mercure_input: MercureInput, delta_t: float) -> List[Com
     return entries
 
 
-def _solar_glazing_gain(mercure_input: MercureInput, scenario: ClimateScenario) -> ComponentBreakdownEntry:
+def _solar_glazing_gain(
+    mercure_input: MercureInput, scenario: ClimateScenario
+) -> "tuple[ComponentBreakdownEntry, list]":
     total_w = 0.0
+    by_facade = []
     for f in mercure_input.glazing.facades:
         radiation = scenario.solar_radiation_by_facade_wm2.get(f.facade, 0.0)
-        total_w += f.area_m2 * radiation * f.solar_factor * f.protection_factor * f.shade_factor
-    return ComponentBreakdownEntry(component_code="solar_glazing", label="Apports solaires vitrages", sensible_w=total_w, latent_w=0.0, total_w=total_w)
+        gain_w = f.area_m2 * radiation * f.solar_factor * f.protection_factor * f.shade_factor
+        total_w += gain_w
+        by_facade.append(
+            FacadeSolarGain(
+                facade=f.facade,
+                area_m2=f.area_m2,
+                radiation_wm2=radiation,
+                solar_factor=f.solar_factor,
+                protection_factor=f.protection_factor,
+                gain_w=gain_w,
+            )
+        )
+    entry = ComponentBreakdownEntry(
+        component_code="solar_glazing", label="Apports solaires vitrages", sensible_w=total_w, latent_w=0.0, total_w=total_w
+    )
+    return entry, by_facade
 
 
 def _occupancy_gains(mercure_input: MercureInput):
@@ -225,7 +243,7 @@ def _compute_scenario_result(mercure_input: MercureInput, scenario: ClimateScena
     delta_t = positive_cooling_delta_t(scenario.outdoor_temperature_c, mercure_input.comfort.cooling_setpoint_day_c)
 
     transmission = _transmission_loads(mercure_input, delta_t)
-    solar = _solar_glazing_gain(mercure_input, scenario)
+    solar, solar_gain_by_facade = _solar_glazing_gain(mercure_input, scenario)
     occ_sensible, occ_latent = _occupancy_gains(mercure_input)
     eq_sensible, eq_latent = _equipment_gains(mercure_input)
     lighting = _lighting_gain(mercure_input)
@@ -274,6 +292,7 @@ def _compute_scenario_result(mercure_input: MercureInput, scenario: ClimateScena
         breakdown=breakdown,
         warnings=warnings,
         confidence_score=_compute_confidence_score(mercure_input, warnings),
+        solar_gain_by_facade=solar_gain_by_facade,
     )
 
 

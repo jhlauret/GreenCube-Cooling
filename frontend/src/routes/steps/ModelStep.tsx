@@ -70,16 +70,90 @@ export function ModelStep() {
         widthM: template.width_m,
         heightM: template.height_m,
         uValueWm2k: template.wall_u_value,
+        roofUValueWm2k: template.roof_u_value,
+        floorUValueWm2k: template.floor_u_value,
         airtightnessN50: template.airtightness_n50,
       },
     });
   }
 
+  /**
+   * Whether the study's current values still match the catalog template it
+   * was applied from. Compares only the fields the template actually
+   * governs (GC-COOLING-08 pt.6: distinguish "inherited" from
+   * "customized" so a modification is never silently lost or hidden).
+   */
+  function isCustomizedFromTemplate(template: BackendThermalSpecification): boolean {
+    return (
+      model.lengthM !== template.length_m ||
+      model.widthM !== template.width_m ||
+      model.heightM !== template.height_m ||
+      model.uValueWm2k !== template.wall_u_value ||
+      model.roofUValueWm2k !== template.roof_u_value ||
+      model.floorUValueWm2k !== template.floor_u_value ||
+      model.airtightnessN50 !== template.airtightness_n50
+    );
+  }
+
+  const appliedTemplate = model.templateId ? templates.find((t) => t.id === model.templateId) : undefined;
+  const customized = appliedTemplate ? isCustomizedFromTemplate(appliedTemplate) : false;
+  const templateHasNewerVersion =
+    appliedTemplate != null && model.templateVersion != null && appliedTemplate.version !== model.templateVersion;
+
+  /**
+   * Building the diff up front, and requiring an explicit confirmation
+   * before applying it, is what GC-COOLING-08 pt.7/8 asks for: a template
+   * reload/version bump must never silently overwrite a customization —
+   * the user sees exactly which fields would change and confirms before
+   * anything is touched.
+   */
+  function templateReapplyDiff(template: BackendThermalSpecification): string[] {
+    const rows: [string, number, number, string][] = [
+      ['Longueur', model.lengthM, template.length_m, 'm'],
+      ['Largeur', model.widthM, template.width_m, 'm'],
+      ['Hauteur', model.heightM, template.height_m, 'm'],
+      ['U murs', model.uValueWm2k, template.wall_u_value, 'W/m².K'],
+      ['U toiture', model.roofUValueWm2k, template.roof_u_value, 'W/m².K'],
+      ['U plancher', model.floorUValueWm2k, template.floor_u_value, 'W/m².K'],
+      ['Étanchéité n50', model.airtightnessN50, template.airtightness_n50, 'vol/h'],
+    ];
+    return rows
+      .filter(([, current, next]) => current !== next)
+      .map(([label, current, next, unit]) => `${label} : ${current} -> ${next} ${unit}`);
+  }
+
+  function reapplyTemplate() {
+    if (!appliedTemplate) return;
+    const diff = templateReapplyDiff(appliedTemplate);
+    if (diff.length > 0) {
+      const confirmed = window.confirm(
+        `Réappliquer le modèle catalogue « ${appliedTemplate.code} » (v${appliedTemplate.version}) va remplacer les valeurs suivantes :\n\n` +
+          diff.join('\n') +
+          '\n\nContinuer ?',
+      );
+      if (!confirmed) return;
+    }
+    const presentation = MODEL_PRESENTATION.find((m) => m.catalogCode === appliedTemplate.code);
+    applyTemplate(appliedTemplate, presentation?.code ?? model.modelCode);
+  }
+
   function selectCustom() {
-    updateStudy(studyId, { model: { ...model, modelCode: 'custom', templateId: null, templateVersion: null } });
+    // Deliberately keeps templateId/templateVersion untouched: if a catalog
+    // model was already applied, switching to "Personnalisé" here means
+    // "customize this GreenCube for this study" (GC-COOLING-08
+    // "Personnalisation d'un modèle catalogue" — the study keeps a fork of
+    // the template, source_template_id stays set on the backend, and the
+    // UI must keep showing which template it diverged from). Only a study
+    // that never had a template applied ends up with a plain, unattributed
+    // custom configuration.
+    updateStudy(studyId, { model: { ...model, modelCode: 'custom' } });
   }
 
   function setDimension(field: 'lengthM' | 'widthM' | 'heightM', value: number) {
+    updateStudy(studyId, { model: { ...model, [field]: value } });
+  }
+
+  function setEnvelope(field: 'uValueWm2k' | 'roofUValueWm2k' | 'floorUValueWm2k', value: number) {
     updateStudy(studyId, { model: { ...model, [field]: value } });
   }
 
@@ -145,6 +219,61 @@ export function ModelStep() {
                   <LabeledNumber label="Largeur (m)" value={model.widthM} onChange={(v) => setDimension('widthM', v)} />
                   <LabeledNumber label="Hauteur (m)" value={model.heightM} onChange={(v) => setDimension('heightM', v)} />
                 </div>
+                <p className="mb-2 mt-4 text-sm font-medium text-ink">Valeurs U (W/m².K)</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <LabeledNumber
+                    label="Murs"
+                    value={model.uValueWm2k}
+                    min={0.05}
+                    max={6}
+                    step={0.01}
+                    onChange={(v) => setEnvelope('uValueWm2k', v)}
+                  />
+                  <LabeledNumber
+                    label="Toiture"
+                    value={model.roofUValueWm2k}
+                    min={0.05}
+                    max={6}
+                    step={0.01}
+                    onChange={(v) => setEnvelope('roofUValueWm2k', v)}
+                  />
+                  <LabeledNumber
+                    label="Plancher"
+                    value={model.floorUValueWm2k}
+                    min={0.05}
+                    max={6}
+                    step={0.01}
+                    onChange={(v) => setEnvelope('floorUValueWm2k', v)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {appliedTemplate && (
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-muted p-3 text-xs">
+                {customized ? (
+                  <span className="rounded-full bg-amber-100 px-2 py-1 font-medium text-amber-800">
+                    Modifié pour cette étude
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-brand-50 px-2 py-1 font-medium text-brand-700">
+                    Valeurs héritées du catalogue Odoo (v{appliedTemplate.version})
+                  </span>
+                )}
+                {templateHasNewerVersion && (
+                  <span className="text-ink-soft">
+                    Une version plus récente du modèle catalogue existe (v{appliedTemplate.version}).
+                  </span>
+                )}
+                {(customized || templateHasNewerVersion) && (
+                  <button
+                    type="button"
+                    onClick={reapplyTemplate}
+                    className="ml-auto rounded-lg border border-brand-300 px-3 py-1 font-medium text-brand-700 hover:bg-brand-50"
+                  >
+                    Réappliquer le modèle catalogue
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -173,8 +302,12 @@ export function ModelStep() {
                 Vitrage ℹ️
               </dt>
               <dd className="text-right font-medium text-ink">{model.glazingType}</dd>
-              <dt className="text-ink-faint">Coefficient U (moyen)</dt>
+              <dt className="text-ink-faint">Coefficient U murs</dt>
               <dd className="text-right font-medium text-ink">{model.uValueWm2k.toFixed(2)} W/m².K</dd>
+              <dt className="text-ink-faint">Coefficient U toiture</dt>
+              <dd className="text-right font-medium text-ink">{model.roofUValueWm2k.toFixed(2)} W/m².K</dd>
+              <dt className="text-ink-faint">Coefficient U plancher</dt>
+              <dd className="text-right font-medium text-ink">{model.floorUValueWm2k.toFixed(2)} W/m².K</dd>
               <dt className="text-ink-faint">Étanchéité à l'air</dt>
               <dd className="text-right font-medium text-ink">{model.airtightnessN50} vol/h</dd>
             </dl>
@@ -208,23 +341,36 @@ function LabeledNumber({
   onChange,
   min = 0.5,
   max = 20,
+  step = 0.1,
 }: {
   label: string;
   value: number;
   onChange: (v: number) => void;
   min?: number;
   max?: number;
+  step?: number;
 }) {
   return (
     <label className="flex flex-col gap-1 text-xs text-ink-soft">
       {label}
       <input
         type="number"
-        step="0.1"
+        step={step}
         min={min}
         max={max}
         value={value}
         onChange={(e) => {
+          // Deliberately does NOT clamp on every keystroke: this is a
+          // controlled input, so re-rendering it with a clamped value
+          // mid-typing (e.g. typing "0.33" one character at a time, where
+          // "0" alone would clamp to `min`) rewrites the field's text out
+          // from under the user's cursor and corrupts what they're typing.
+          // Bounds are enforced on blur instead, and always server-side
+          // (api_validation.FIELD_LIMITS) regardless of what the UI does.
+          const raw = Number(e.target.value);
+          if (Number.isFinite(raw)) onChange(raw);
+        }}
+        onBlur={(e) => {
           const raw = Number(e.target.value);
           if (Number.isFinite(raw)) onChange(Math.min(max, Math.max(min, raw)));
         }}

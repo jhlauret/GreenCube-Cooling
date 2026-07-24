@@ -9,11 +9,37 @@ export interface BackendResultComponent {
   percentage_of_total: number;
 }
 
+/** Per-facade share of `breakdown`'s single "solar_glazing" total —
+ * informative decomposition only, never additional load on top of it
+ * (GC-COOLING-09 pt.11). */
+export interface BackendFacadeSolarGain {
+  facade: 'north' | 'south' | 'east' | 'west';
+  area_m2: number;
+  radiation_wm2: number;
+  solar_factor: number;
+  protection_factor: number;
+  gain_w: number;
+}
+
 export interface BackendResult {
   id: number;
   study_id: number;
+  job_id: number | null;
   engine: string;
   engine_version: string | null;
+  requested_engine: 'quick_solver' | 'energyplus' | 'both' | null;
+  energyplus_processing_status:
+    | 'not_requested'
+    | 'disabled'
+    | 'translation_failed'
+    | 'queued_for_worker'
+    | 'simulation_running'
+    | 'simulation_unavailable'
+    | 'simulation_failed'
+    | 'simulation_completed';
+  /** True only for the study's single latest successful result — never
+   * inferred client-side, always the backend's own answer (GC-COOLING-16). */
+  is_current: boolean;
   state: 'success' | 'partial' | 'failed' | 'superseded';
   governing_scenario_code: string | null;
   sensible_load_w: number;
@@ -29,6 +55,7 @@ export interface BackendResult {
   warnings: { code: string; message: string; severity: string }[];
   main_load_drivers: { code: string; label: string; percentage: number }[];
   breakdown: BackendResultComponent[];
+  solar_gain_by_facade: BackendFacadeSolarGain[];
   duration_ms: number;
   created_at: string | null;
 }
@@ -86,8 +113,20 @@ export function getStudy(id: number) {
   return apiFetch<BackendStudySummary & Record<string, unknown>>(`/studies/${id}`);
 }
 
-export function patchStudy(id: number, vals: Record<string, unknown>) {
-  return apiFetch(`/studies/${id}`, { method: 'PATCH', body: vals });
+/**
+ * `ifMatch` carries the backend `updated_at` this draft was last synced
+ * against (StudyDraft.backendUpdatedAt). The controller compares it to the
+ * study's current `write_date` and returns 409 COOLING_STUDY_VERSION_CONFLICT
+ * if someone else (another tab, another user) wrote to the study meanwhile —
+ * this is what makes autosave's optimistic-locking real instead of a client
+ * field nobody sends (GC-COOLING-06 §17 "verrouillage optimiste").
+ */
+export function patchStudy(id: number, vals: Record<string, unknown>, ifMatch?: string | null) {
+  return apiFetch<BackendStudySummary & Record<string, unknown>>(`/studies/${id}`, {
+    method: 'PATCH',
+    body: vals,
+    headers: ifMatch ? { 'If-Match': ifMatch } : undefined,
+  });
 }
 
 /** Locks the study (state -> validated); requires state=calculated first. */
@@ -100,6 +139,16 @@ export function validateStudy(id: number) {
  * local draft to track it, not the original. */
 export function createRevision(id: number) {
   return apiFetch<BackendStudySummary>(`/studies/${id}/revisions`, { method: 'POST' });
+}
+
+/** GC-COOLING-13: re-runs the backend's structured validation
+ * (get_validation()'s blocking rules) and, only if there are no blocking
+ * issues, transitions the study to `ready`. The frontend must never flip
+ * this state locally from its own client-side checks — a 422
+ * STUDY_INCOMPLETE response here means the backend disagrees with
+ * whatever the review screen believed was true. */
+export function markStudyReady(id: number) {
+  return apiFetch<BackendStudySummary>(`/studies/${id}/ready`, { method: 'POST' });
 }
 
 export interface BackendFacade {
@@ -147,9 +196,21 @@ export interface BackendOccupancyProfile {
   usual_occupants: number;
   maximum_occupants: number;
   activity_level: string;
+  /** Legacy display-only summary; not authoritative (GC-COOLING-10). */
   usage_days: string;
+  active_monday: boolean;
+  active_tuesday: boolean;
+  active_wednesday: boolean;
+  active_thursday: boolean;
+  active_friday: boolean;
+  active_saturday: boolean;
+  active_sunday: boolean;
+  active_days_count: number;
   start_hour: number;
   end_hour: number;
+  crosses_midnight: boolean;
+  daily_occupied_hours: number;
+  occupancy_fraction: number;
   used_at_night: boolean;
 }
 
@@ -165,6 +226,23 @@ export interface BackendVentilationProfile {
   id: number;
   ventilation_type: string;
   airflow_m3h: number;
+  heat_recovery_efficiency_percent: number;
+  fan_power_w: number;
+  /** Share (0-1) of fan power dissipated as sensible heat inside the
+   * conditioned zone — see ventilation_profile.fan_fraction_dissipated_in_zone
+   * on the backend model (GC-COOLING-14). Not yet exposed in the UI; defaults
+   * to 1.0 (fan inside the zone), which preserves prior behavior. */
+  fan_fraction_dissipated_in_zone: number;
+  door_opening_frequency: string;
+  window_opening_frequency: string;
+  airtightness_n50: number;
+  wind_exposure: string;
+  infiltration_ach: number;
+  /** Value actually used by the solver — see get_effective_infiltration_ach()
+   * on the backend model. Read-only, never sent back on PUT. */
+  effective_infiltration_ach: number;
+  bypass_active: boolean;
+  provenance: string;
 }
 
 export function getVentilationProfile(id: number) {
@@ -181,12 +259,32 @@ export function putShading(id: number, entries: Record<string, unknown>[]) {
 
 export interface BackendEquipmentLoad {
   id: number;
+  product_id: number | null;
   name: string;
   category: string;
   quantity: number;
   unit_power_w: number;
   usage_hours_per_day: number;
   simultaneity_percent: number;
+}
+
+export interface EquipmentLoadCatalogItem {
+  id: number;
+  code: string | null;
+  name: string;
+  category: string;
+  unit_power_w: number;
+  usage_hours_per_day: number;
+  simultaneity_percent: number;
+  data_quality: string | null;
+}
+
+/** Internal-loads (equipment/lighting/appliances) reference catalog
+ * (GC-COOLING-11) — distinct from `getEquipmentCatalog()` below, which
+ * lists cooling equipment to *install*, not the loads a study's premises
+ * already contain. Never hardcode these values in the frontend. */
+export function getEquipmentLoadCatalog() {
+  return apiFetch<EquipmentLoadCatalogItem[]>('/equipment-load-catalog');
 }
 
 export function listEquipmentLoads(id: number) {
@@ -213,13 +311,40 @@ export function confirmAssumptions(id: number) {
   return apiFetch<{ confirmed_count: number }>(`/studies/${id}/assumptions/confirm`, { method: 'POST' });
 }
 
+export type EnergyPlusProcessingStatus =
+  | 'not_requested'
+  | 'disabled'
+  | 'translation_failed'
+  | 'queued_for_worker'
+  | 'simulation_running'
+  | 'simulation_unavailable'
+  | 'simulation_failed'
+  | 'simulation_completed';
+
+export const ENERGYPLUS_TERMINAL_STATUSES: readonly EnergyPlusProcessingStatus[] = [
+  'not_requested',
+  'disabled',
+  'translation_failed',
+  'simulation_unavailable',
+  'simulation_failed',
+  'simulation_completed',
+];
+
+/**
+ * Two real shapes share this type: POST /calculations (creation response)
+ * includes engine/engine_version/request_id; GET /calculations/<job_id>
+ * (polling response) does not — those fields are optional here rather than
+ * fabricated on the polling path.
+ */
 export interface CalculationJob {
   job_id: number;
-  status: string;
-  result_id: number;
-  engine: string;
-  engine_version: string | null;
-  request_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  result_id: number | null;
+  energyplus_processing_status: EnergyPlusProcessingStatus;
+  engine?: string;
+  engine_version?: string | null;
+  request_id?: string;
+  error_message?: string | null;
 }
 
 /**
@@ -297,6 +422,13 @@ export interface EquipmentSelection {
   state: string;
   result_id: number;
   created_at: string | null;
+  /** Set once action_validate() promotes this selection to an immutable
+   * commercial record; null while still a draft/working "selected" choice. */
+  validated_at: string | null;
+  validator_id: number | null;
+  /** Points to the selection this one replaced, if any (substitution chain,
+   * never a destructive edit of history). */
+  supersedes_id: number | null;
 }
 
 export function listEquipmentSelections(id: number) {
@@ -305,4 +437,10 @@ export function listEquipmentSelections(id: number) {
 
 export function postEquipmentSelection(id: number, productId: number) {
   return apiFetch(`/studies/${id}/equipment-selections`, { method: 'POST', body: { product_id: productId } });
+}
+
+export function validateEquipmentSelection(studyId: number, selectionId: number) {
+  return apiFetch<EquipmentSelection>(`/studies/${studyId}/equipment-selections/${selectionId}/validate`, {
+    method: 'POST',
+  });
 }

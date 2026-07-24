@@ -68,6 +68,50 @@ class BuildHoneybeeModelTestCase(unittest.TestCase):
         equipment = model["rooms"][0]["properties"]["energy"]["electric_equipment"]
         self.assertGreaterEqual(equipment["watts_per_area"], 0)
 
+    def test_wall_orientation_areas_follow_the_facade_convention(self):
+        # north/south facades span the box's width; east/west span its
+        # length (see _WIDTH_FACADES docstring) — this is the exact
+        # geometric convention the rest of the codebase (syncStudy.ts,
+        # cooling_study.py) already assumes, so a regression here would be
+        # a silent divergence between MERCURE and the Honeybee export.
+        study_input = studio_standard_input()
+        model, _ = build_honeybee_model(study_input)
+        faces = {f["identifier"]: f for f in model["rooms"][0]["faces"]}
+        length, width, height = study_input.geometry.length_m, study_input.geometry.width_m, study_input.geometry.height_m
+        self.assertAlmostEqual(faces["wall-north"]["area_m2"], width * height, places=3)
+        self.assertAlmostEqual(faces["wall-south"]["area_m2"], width * height, places=3)
+        self.assertAlmostEqual(faces["wall-east"]["area_m2"], length * height, places=3)
+        self.assertAlmostEqual(faces["wall-west"]["area_m2"], length * height, places=3)
+        self.assertEqual(faces["wall-north"]["azimuth_label"], "north")
+        self.assertEqual(faces["roof"]["face_type"], "RoofCeiling")
+        self.assertEqual(faces["floor"]["face_type"], "Floor")
+
+    def test_rejects_non_positive_wall_u_value(self):
+        study_input = studio_standard_input()
+        bad_walls = dataclasses.replace(study_input.envelope.walls, u_value_wm2k=0)
+        bad_envelope = dataclasses.replace(study_input.envelope, walls=bad_walls)
+        bad_input = dataclasses.replace(study_input, envelope=bad_envelope)
+        with self.assertRaises(HoneybeeTranslationError):
+            build_honeybee_model(bad_input)
+
+    def test_rejects_non_positive_roof_u_value(self):
+        study_input = studio_standard_input()
+        bad_roof = dataclasses.replace(study_input.envelope.roof, u_value_wm2k=-1)
+        bad_envelope = dataclasses.replace(study_input.envelope, roof=bad_roof)
+        bad_input = dataclasses.replace(study_input, envelope=bad_envelope)
+        with self.assertRaises(HoneybeeTranslationError):
+            build_honeybee_model(bad_input)
+
+    def test_glazing_facade_with_no_matching_wall_is_skipped_with_warning(self):
+        study_input = studio_standard_input()
+        bogus_facade = dataclasses.replace(study_input.glazing.facades[0], facade="northeast")
+        bad_glazing = dataclasses.replace(study_input.glazing, facades=[bogus_facade])
+        bad_input = dataclasses.replace(study_input, glazing=bad_glazing)
+        model, diagnostics = build_honeybee_model(bad_input)
+        self.assertTrue(any("no matching wall face" in w for w in diagnostics.warnings))
+        for wall in (f for f in model["rooms"][0]["faces"] if f["identifier"].startswith("wall-")):
+            self.assertEqual(wall["apertures"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

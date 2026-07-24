@@ -52,9 +52,46 @@ le serveur réel (pas une simulation de son comportement).
 base de test `greencube_test_20260720` supprimée. Le service `odoo.service` de production (base
 `orange_dev`) n'a jamais été touché.
 
+## Suite (2026-07-20) : le vrai bug multi-société derrière le point 4 ci-dessus, corrigé
+
+Le point 4 ci-dessus ne corrigeait qu'une **fixture de test** (créer un solver.version par société de
+test) — pas le vrai défaut de production. Testé explicitement : un vrai utilisateur non-superutilisateur
+d'une deuxième société, dans une base fraîche, ne voit **ni** la version MERCURE active **ni** aucun
+modèle catalogue GreenCube (`SOLVER_VERSION_MISSING` + `MODEL_MISSING` bloquants), parce que
+`data/solver_version_data.xml` et `data/thermal_specification_catalog_data.xml` ne créent leurs lignes
+que pour la société active au moment de l'installation du module — `company_id` y est `required=True`.
+
+**Corrigé automatiquement** (version bumpée 18.0.3.0.0 → 18.0.4.0.0) :
+- `models/solver_version.py::_provision_for_companies()` et
+  `models/thermal_specification.py::_provision_catalog_for_companies()` : copient les enregistrements de
+  référence existants pour toute société qui n'en a pas encore.
+- `models/res_company.py` (nouveau) : surcharge `create()` pour provisionner automatiquement toute
+  **nouvelle** société.
+- `post_init_hook` (`__init__.py`) : provisionne toute société **déjà existante** au moment de
+  l'installation/mise à jour du module.
+- `migrations/18.0.4.0.0/post-migrate.py` : même provisionnement pour une mise à niveau depuis une
+  version antérieure avec des sociétés déjà présentes.
+
+**Piège réel rencontré et corrigé en cours de route** : `record.copy({"company_id": ...})` réinitialise
+silencieusement `state` à sa valeur par défaut (`"draft"`) — comportement documenté d'Odoo
+(`odoo/fields.py` : *"by default, `state` fields should be reset on copy"*) qui s'applique à tout champ
+nommé exactement `state`, sans annotation explicite dans notre code. Sans passer `"state": "active"`
+explicitement dans le `copy()`, la version provisionnée existait mais restait inactive — le bug
+persistait silencieusement sous une autre forme. Découvert en vérifiant l'état réel en base (`SELECT
+state FROM greencube_cooling_solver_version`), pas en supposant que `copy()` préserve tout par défaut.
+
+**Vérifié réellement, deux fois** (avant et après le correctif du piège `state`) : création d'une
+deuxième société + utilisateur non-admin qui lui appartient exclusivement, recherche des templates et du
+solver version avec `.with_user()` (jamais en tant que superutilisateur, qui contourne `ir.rule`), et
+`get_validation()` sur une étude de cette société. Egalement vérifié le chemin `post_init_hook` (société
+déjà présente avant l'installation du module). Suite complète rejouée après coup : toujours 45/45, 0
+échec — la suppression du provisionnement manuel désormais redondant dans `test_http_api.py::setUpClass`
+(qui entrait en conflit avec le nouveau provisionnement automatique via `_check_single_active`) a été
+nécessaire pour ça.
+
 | Lot | État | Preuve (code) | Preuve (tests) | Exécuté ? |
 |---|---|---|---|---|
-| 01 — Modèle Odoo, droits | Partiel avancé | `security/ir.model.access.csv`, `security/greencube_cooling_rules.xml`, `write()`/`unlink()` sur `result`/`snapshot`/`equipment.selection`/`calculation.job`/`simulation.artifact`, `migrations/18.0.2.0.0/post-migrate.py`, `migrations/18.0.3.0.0/post-migrate.py`, `migrations/README.md` | `tests/test_cooling_study.py::TestCoolingStudySecurity` | **Oui** — installation réelle, 45/45 tests, les deux scripts de migration testés contre des données fabriquées (voir note ci-dessus) |
+| 01 — Modèle Odoo, droits | Partiel avancé | `security/ir.model.access.csv`, `security/greencube_cooling_rules.xml`, `write()`/`unlink()` sur `result`/`snapshot`/`equipment.selection`/`calculation.job`/`simulation.artifact`, `migrations/18.0.2.0.0/`, `migrations/18.0.3.0.0/`, `migrations/18.0.4.0.0/` (provisionnement multi-société automatique), `models/res_company.py`, `post_init_hook`, `migrations/README.md` | `tests/test_cooling_study.py::TestCoolingStudySecurity` | **Oui** — installation réelle, 45/45 tests, les trois scripts de migration testés contre des données fabriquées (voir notes ci-dessus) |
 | 02 — API contrats | Partiel avancé | `controllers/api.py` (`@_guarded`, enveloppe erreur, pagination `GET /studies`, contrat job→résultat, routes worker EnergyPlus) | `tests/test_http_api.py` (10 tests HttpCase, désormais réellement découverts et exécutés) | **Oui** — 10/10 verts après correction des fixtures ; CSRF/CORS toujours non traité (tous les routes `csrf=False`), pas de contrat OpenAPI/JSON Schema versionné |
 | 03 — Géolocalisation | Partiel avancé | `services/geo.py`, `models/geo_cache.py`, `main_orientation`, fix `climate_confirmed` vs troncature 0/0, fix `urban_dense`→`dense_urban` dans `mapStudyToInput.ts` | — | Non (pas de suite de tests dédiée) |
 | 04 — Climat historique | Partiel avancé (lot antérieur, non retouché cette session) | `services/climate.py`, `models/climate_dataset.py` | — | Non |

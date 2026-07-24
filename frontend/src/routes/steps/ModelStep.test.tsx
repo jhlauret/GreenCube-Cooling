@@ -144,4 +144,102 @@ describe('ModelStep', () => {
       expect(screen.getByText(/Impossible de charger le catalogue GreenCube/)).toBeInTheDocument(),
     );
   });
+
+  it('applies distinct roof/floor U-values per catalog model, not a fixed ratio of the wall value', async () => {
+    const user = userEvent.setup();
+    renderModelStep();
+    const store = useStudyStore;
+    const id = Object.keys(store.getState().studies)[0];
+
+    await waitFor(() => expect(store.getState().studies[id].model.roofUValueWm2k).toBe(0.16));
+    expect(store.getState().studies[id].model.floorUValueWm2k).toBe(0.2);
+
+    await screen.findByText(/GreenCube Bureau/);
+    await user.click(screen.getByText(/GreenCube Bureau/));
+
+    await waitFor(() => {
+      expect(store.getState().studies[id].model.roofUValueWm2k).toBe(0.18);
+      expect(store.getState().studies[id].model.floorUValueWm2k).toBe(0.22);
+    });
+  });
+
+  it('lets the user edit wall/roof/floor U-values individually in custom mode', async () => {
+    const user = userEvent.setup();
+    renderModelStep();
+
+    await screen.findByText(/GreenCube Personnalisé/);
+    await user.click(screen.getByText(/GreenCube Personnalisé/));
+
+    const roofInput = await screen.findByLabelText('Toiture');
+    await user.clear(roofInput);
+    await user.type(roofInput, '0.33');
+
+    const id = Object.keys(useStudyStore.getState().studies)[0];
+    await waitFor(() => expect(useStudyStore.getState().studies[id].model.roofUValueWm2k).toBeCloseTo(0.33));
+    // Wall/floor U-values are untouched by editing the roof field alone.
+    expect(useStudyStore.getState().studies[id].model.floorUValueWm2k).toBe(0.2);
+  });
+
+  it('flags the model as "modifié pour cette étude" once a customization diverges from the applied template', async () => {
+    const user = userEvent.setup();
+    renderModelStep();
+
+    await waitFor(() => expect(screen.getByText(/Valeurs héritées du catalogue Odoo/)).toBeInTheDocument());
+
+    await user.click(screen.getByText(/GreenCube Personnalisé/));
+    const roofInput = await screen.findByLabelText('Toiture');
+    await user.clear(roofInput);
+    await user.type(roofInput, '0.9');
+
+    // Re-selecting the studio card re-applies the template's exact values,
+    // clearing the customization — then diverge again to check the badge.
+    await user.click(screen.getByText(/GreenCube Studio/));
+    await user.click(screen.getByText(/GreenCube Personnalisé/));
+    const roofInput2 = await screen.findByLabelText('Toiture');
+    await user.clear(roofInput2);
+    await user.type(roofInput2, '0.9');
+
+    await waitFor(() => expect(screen.getByText('Modifié pour cette étude')).toBeInTheDocument());
+    expect(screen.getByText('Réappliquer le modèle catalogue')).toBeInTheDocument();
+  });
+
+  it('reapplying the catalog template asks for confirmation and restores the inherited values', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderModelStep();
+
+    await waitFor(() => expect(screen.getByText(/Valeurs héritées du catalogue Odoo/)).toBeInTheDocument());
+    await user.click(screen.getByText(/GreenCube Personnalisé/));
+    const roofInput = await screen.findByLabelText('Toiture');
+    await user.clear(roofInput);
+    await user.type(roofInput, '0.9');
+
+    await waitFor(() => expect(screen.getByText('Modifié pour cette étude')).toBeInTheDocument());
+    await user.click(screen.getByText('Réappliquer le modèle catalogue'));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    const id = Object.keys(useStudyStore.getState().studies)[0];
+    await waitFor(() => expect(useStudyStore.getState().studies[id].model.roofUValueWm2k).toBe(0.16));
+    confirmSpy.mockRestore();
+  });
+
+  it('does not apply the reapply-template change when the user cancels the confirmation', async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderModelStep();
+
+    await waitFor(() => expect(screen.getByText(/Valeurs héritées du catalogue Odoo/)).toBeInTheDocument());
+    await user.click(screen.getByText(/GreenCube Personnalisé/));
+    const roofInput = await screen.findByLabelText('Toiture');
+    await user.clear(roofInput);
+    await user.type(roofInput, '0.9');
+
+    await waitFor(() => expect(screen.getByText('Modifié pour cette étude')).toBeInTheDocument());
+    await user.click(screen.getByText('Réappliquer le modèle catalogue'));
+
+    expect(confirmSpy).toHaveBeenCalled();
+    const id = Object.keys(useStudyStore.getState().studies)[0];
+    expect(useStudyStore.getState().studies[id].model.roofUValueWm2k).toBeCloseTo(0.9);
+    confirmSpy.mockRestore();
+  });
 });
